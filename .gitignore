@@ -1,0 +1,6 @@
+# Runtime data: WebView2 browser profile (cookies, logins), settings with tokens, logs
+app/data/
+
+# Temp files left by Windows when the exe is replaced
+*.TMP
+*.tmp

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1B5C40"/><stop offset="1" stop-color="#0D3323"/></linearGradient>
+    <path id="plane" d="M50 4C55 4 58 10 58 18V38L95 60V71L58 60V80L71 90V98L50 92L29 98V90L42 80V60L5 71V60L42 38V18C42 10 45 4 50 4Z"/>
+    <mask id="notch" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="#fff"/>
+      <circle cx="28" cy="128" r="17" fill="#000"/>
+      <circle cx="228" cy="128" r="17" fill="#000"/>
+    </mask>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#bg)"/>
+  <g transform="rotate(-10 128 128)">
+    <g mask="url(#notch)">
+      <rect x="28" y="68" width="200" height="120" rx="18" fill="#FFFDF7"/>
+      <path d="M46 68H88V188H46A18 18 0 0 1 28 170V86A18 18 0 0 1 46 68Z" fill="#E0611B"/>
+    </g>
+    <line x1="88" y1="80" x2="88" y2="176" stroke="#FFFDF7" stroke-width="5" stroke-dasharray="7 9" stroke-linecap="round"/>
+    <use xlink:href="#plane" fill="#12432F" transform="translate(158 128) rotate(90) translate(-44 -44) scale(0.88)"/>
+  </g>
+  <circle cx="194" cy="192" r="40" fill="#E0611B" stroke="#0E3524" stroke-width="9"/>
+  <path d="M175 192L189 206L213 180" fill="none" stroke="#fff" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

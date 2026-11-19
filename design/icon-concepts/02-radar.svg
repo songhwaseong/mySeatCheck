@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="bg" cx="0.5" cy="0.45" r="0.6"><stop offset="0" stop-color="#1E6847"/><stop offset="1" stop-color="#0B2E20"/></radialGradient>
+    <linearGradient id="sweep" gradientUnits="userSpaceOnUse" x1="88" y1="40" x2="200" y2="96">
+      <stop offset="0" stop-color="#F07A2E" stop-opacity="0"/><stop offset="1" stop-color="#F07A2E" stop-opacity="0.9"/>
+    </linearGradient>
+    <path id="plane" d="M50 4C55 4 58 10 58 18V38L95 60V71L58 60V80L71 90V98L50 92L29 98V90L42 80V60L5 71V60L42 38V18C42 10 45 4 50 4Z"/>
+  </defs>
+  <circle cx="128" cy="128" r="120" fill="url(#bg)"/>
+  <g fill="none" stroke="#4C9A74" stroke-opacity="0.65">
+    <circle cx="128" cy="128" r="74" stroke-width="5"/>
+    <circle cx="128" cy="128" r="38" stroke-width="5"/>
+    <path d="M128 18V238M18 128H238" stroke-width="4"/>
+  </g>
+  <path d="M128 128L91.1 26.5A108 108 0 0 1 210.7 58.6Z" fill="url(#sweep)"/>
+  <path d="M128 128L210.7 58.6" stroke="#F07A2E" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="128" cy="128" r="112" fill="none" stroke="#FAF7EF" stroke-width="12"/>
+  <circle cx="84" cy="176" r="9" fill="#F07A2E" fill-opacity="0.55"/>
+  <use xlink:href="#plane" fill="#FFFDF7" transform="translate(170 92) rotate(45) translate(-32 -32) scale(0.64)"/>
+  <circle cx="128" cy="128" r="10" fill="#F07A2E"/>
+</svg>
