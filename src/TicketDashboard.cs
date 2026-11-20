@@ -15,7 +15,7 @@ public partial class MainForm
     Panel deck;
     Panel dashboard, seatsPanel;
     Label heading, detailStatus, emptySeats, checksSummary;
-    Button emptyDeck, openRoute, editRoute, copyRoute, watchToggle, removeRoute, liveButton, logButton, checkButton;
+    Button emptyDeck, openRoute, editRoute, alertRoute, copyRoute, watchToggle, removeRoute, liveButton, logButton, checkButton;
     Button domesticTab, internationalTab;
     DataGridView fares, checksTable;
     TableLayoutPanel historyView;
@@ -81,7 +81,7 @@ public partial class MainForm
     void CheckNow()
     {
         if (!settings.Running) SetRunning(true);
-        else nextRun = DateTime.Now;
+        else foreach (var w in settings.Watches) w.RunSoon();
     }
 
     void BuildUi()
@@ -116,7 +116,7 @@ public partial class MainForm
         var commands = ButtonRow();
         runBtn = IconButton(Glyph.Pause, "", TicketStyle.Orange, Color.White, (s, e) => SetRunning(!settings.Running));
         commands.Controls.Add(runBtn);
-        commands.Controls.Add(IconButton(Glyph.Settings, "알림 설정", TicketStyle.Forest, Color.White, (s, e) => ShowSettings()));
+        commands.Controls.Add(IconButton(Glyph.Settings, "공통 알림 설정 · 모든 노선 기본값", TicketStyle.Forest, Color.White, (s, e) => ShowSettings()));
         commands.Controls.Add(IconButton(Glyph.Add, "감시 추가", TicketStyle.Forest, Color.White, (s, e) => ShowWatchDialog(null)));
         checkButton = IconButton(Glyph.Refresh, "지금 확인", TicketStyle.Face, TicketStyle.Forest, (s, e) => CheckNow());
         commands.Controls.Add(checkButton);
@@ -186,6 +186,8 @@ public partial class MainForm
         var routeButtons = ButtonRow();
         editRoute = IconButton(Glyph.Edit, "조건 수정", TicketStyle.Face, TicketStyle.Forest, (s, e) => ShowWatchDialog(selectedWatch));
         routeButtons.Controls.Add(editRoute);
+        alertRoute = IconButton(Glyph.Bell, "이 노선의 알림·조회 간격", TicketStyle.Face, TicketStyle.Forest, (s, e) => ShowRouteAlerts());
+        routeButtons.Controls.Add(alertRoute);
         copyRoute = IconButton(Glyph.Copy, "다른 날짜로 노선 복제", TicketStyle.Face, TicketStyle.Forest, (s, e) => CopySelected());
         routeButtons.Controls.Add(copyRoute);
         watchToggle = IconButton(Glyph.Unwatch, "노선 감시 끄기", TicketStyle.Face, TicketStyle.Forest, (s, e) => ToggleSelected());
@@ -515,7 +517,7 @@ public partial class MainForm
     void RefreshDetails()
     {
         var w = selectedWatch;
-        editRoute.Enabled = removeRoute.Enabled = w != null;
+        editRoute.Enabled = alertRoute.Enabled = removeRoute.Enabled = w != null;
         openRoute.Enabled = copyRoute.Enabled = w != null && FlightSearch.Read(w.Url, true) != null;
         watchToggle.Enabled = w != null && w.InactiveReason == null;
         fares.Rows.Clear();
@@ -537,7 +539,8 @@ public partial class MainForm
                 (string.IsNullOrEmpty(w.LastDuration) ? "" : " (" + w.LastDuration + " 걸림)")) +
                 (w.HiddenSchedules > 0 && w.Unconfirmed == null ? "   ·   접힌 동일가 일정 " + w.HiddenSchedules + "편 미확인" : "");
             detailStatus.Text += "\n마지막 정상 확인 " + (string.IsNullOrEmpty(w.LastSuccess) ? "기록 없음" : w.LastSuccess) +
-                (w.FailureStreak > 0 ? " · 연속 전체 확인 실패 " + w.FailureStreak + "회" : "");
+                (w.FailureStreak > 0 ? " · 연속 전체 확인 실패 " + w.FailureStreak + "회" : "") +
+                "   ·   " + w.AlertSummary(settings);
             ButtonTips.SetToolTip(detailStatus, detailStatus.Text);
             detailStatus.ForeColor = uncertain || w.FailureStreak > 0 ? TicketStyle.Orange : TicketStyle.Muted;
             if (w.Enabled) SetIcon(watchToggle, Glyph.Unwatch, "노선 감시 끄기");
@@ -559,7 +562,7 @@ public partial class MainForm
         if (w == null || w.InactiveReason != null) return;
         w.Enabled = !w.Enabled;
         w.Unconfirmed = Watch.Waiting;
-        if (w.Enabled && settings.Running) nextRun = DateTime.Now;
+        if (w.Enabled) w.RunSoon(); // 다시 켠 이 노선만 바로 조회한다
         if (!w.Enabled && activeWatch == w) activeCheck.Cancel();
         SaveSettings();
         RefreshList();
@@ -585,18 +588,161 @@ public partial class MainForm
             var first = new CheckBox { Text = "첫 조회에서 발견한 좌석도 알림", Dock = DockStyle.Top, Checked = source.NotifyFirst };
             var add = ActionButton("새 노선 추가", TicketStyle.Forest, Color.White, (s, e) =>
             {
-                if (SaveWatch(dialog, search.WithDate(date.Value), null, source.MaxPrice, first.Checked))
+                if (SaveWatch(dialog, search.WithDate(date.Value), null, source.MaxPrice, first.Checked, source))
                     dialog.DialogResult = DialogResult.OK;
             });
             add.Dock = DockStyle.Bottom;
             dialog.Controls.Add(first);
             dialog.Controls.Add(date);
-            var caption = FieldLabel("새 출발 날짜 · 기존 노선의 검색 조건과 최대 금액을 복사합니다.");
+            var caption = FieldLabel("새 출발 날짜 · 기존 노선의 검색 조건, 최대 금액, 알림을 복사합니다.");
             caption.Dock = DockStyle.Top;
             dialog.Controls.Add(caption);
             dialog.Controls.Add(add);
             dialog.AcceptButton = add;
             dialog.ShowDialog(this);
+        }
+    }
+
+    // 노선별 알림·조회 간격. 감시 조건(주소)과 따로 저장하므로 바꿔도 이전 좌석 목록과 알림 비교는 그대로 남는다.
+    void ShowRouteAlerts()
+    {
+        var w = selectedWatch;
+        if (w == null) return;
+        using (var dialog = Dialog("노선 알림 · " + LabelOf(w.Url), 360))
+        {
+            var form = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 6, ColumnCount = 3 };
+            form.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            form.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            for (int i = 0; i < 4; i++) form.RowStyles.Add(new RowStyle(SizeType.Absolute, 43));
+            form.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            form.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            int common = Math.Max(MinInterval, Math.Min(60, settings.IntervalMin));
+
+            var ownInterval = new CheckBox { Text = "조회 간격 따로", Checked = w.IntervalMin > 0, AutoSize = true, Anchor = AnchorStyles.Left };
+            var interval = new NumericUpDown { Minimum = MinInterval, Maximum = 60, Width = 60, AccessibleName = "이 노선의 조회 간격(분)",
+                Value = w.IntervalMin > 0 ? Math.Max(MinInterval, Math.Min(60, w.IntervalMin)) : common, Enabled = w.IntervalMin > 0 };
+            ownInterval.CheckedChanged += (s, e) => { interval.Enabled = ownInterval.Checked; if (ownInterval.Checked) interval.Focus(); };
+            var intervalRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Anchor = AnchorStyles.Left, Margin = Padding.Empty };
+            intervalRow.Controls.Add(interval);
+            intervalRow.Controls.Add(new Label { Text = "분마다 · 끄면 공통 " + common + "분", AutoSize = true, ForeColor = TicketStyle.Muted,
+                Margin = new Padding(3, 5, 0, 0) });
+
+            var pc = new CheckBox { Text = "PC 알림", Checked = w.AlertPc, AutoSize = true, Anchor = AnchorStyles.Left };
+            var pcHint = new Label { Text = "알림 영역 풍선과 소리", AutoSize = true, ForeColor = TicketStyle.Muted, Anchor = AnchorStyles.Left };
+            var ntfy = new CheckBox { Text = "ntfy", Checked = w.AlertNtfy, AutoSize = true, Anchor = AnchorStyles.Left };
+            var topic = new TextBox { Anchor = AnchorStyles.Left | AnchorStyles.Right, Text = w.NtfyTopic,
+                AccessibleName = "이 노선의 ntfy 주제, 비우면 공통 주제" };
+            var telegram = new CheckBox { Text = "텔레그램", Checked = w.AlertTelegram, AutoSize = true, Anchor = AnchorStyles.Left };
+            var chat = new TextBox { Anchor = AnchorStyles.Left | AnchorStyles.Right, Text = w.TelegramChat,
+                AccessibleName = "이 노선의 텔레그램 채팅 ID, 비우면 공통 채팅 ID" };
+            // 다른 사람이 같은 봇에서 Start 를 누르면 그 사람의 채팅 ID를 찾을 수 있다. 봇 토큰은 공통 설정의 것.
+            var token = new TextBox { Text = settings.TelegramToken };
+            dialog.Disposed += (s, e) => token.Dispose();
+            Button find = null;
+            find = IconButton(Glyph.Search, "채팅 ID 찾기 · 받을 사람이 봇에서 Start 를 누른 뒤", TicketStyle.Face, TicketStyle.Forest,
+                (s, e) => LookUpTelegramChat(dialog, find, token, chat));
+            Action applyOn = () =>
+            {
+                topic.Enabled = ntfy.Checked;
+                chat.Enabled = telegram.Checked;
+                find.Enabled = telegram.Checked && IsTelegramToken(settings.TelegramToken);
+            };
+            ntfy.CheckedChanged += (s, e) => applyOn();
+            telegram.CheckedChanged += (s, e) => applyOn();
+            applyOn();
+
+            var rows = new Control[][] {
+                new Control[] { ownInterval, intervalRow, null }, new Control[] { pc, pcHint, null },
+                new Control[] { ntfy, topic, null }, new Control[] { telegram, chat, find } };
+            for (int i = 0; i < rows.Length; i++)
+            {
+                form.Controls.Add(rows[i][0], 0, i);
+                form.Controls.Add(rows[i][1], 1, i);
+                if (rows[i][2] == null) continue;
+                rows[i][2].Anchor = AnchorStyles.Left;
+                form.Controls.Add(rows[i][2], 2, i);
+            }
+
+            // 공통 설정에서 꺼 두었거나 비어 있는 채널은 여기서 켜도 보내지 않는다는 것을 알려 준다.
+            var notes = new List<string> { "주제·채팅 ID를 비우면 공통 알림 설정의 값으로 보냅니다." };
+            if (!settings.NtfyOn) notes.Add("ntfy는 공통 알림 설정에서 꺼져 있어 보내지 않습니다.");
+            if (!settings.TelegramOn) notes.Add("텔레그램은 공통 알림 설정에서 꺼져 있어 보내지 않습니다.");
+            else if (!IsTelegramToken(settings.TelegramToken)) notes.Add("텔레그램 봇 토큰은 공통 알림 설정에서 먼저 넣어 주세요.");
+            var hint = new Label { Text = string.Join("\n", notes), Dock = DockStyle.Fill, ForeColor = TicketStyle.Muted,
+                UseMnemonic = false, Padding = new Padding(0, 8, 0, 0) };
+            form.Controls.Add(hint, 0, 4);
+            form.SetColumnSpan(hint, 3);
+
+            Func<Watch> entered = () => new Watch { AlertPc = pc.Checked, AlertNtfy = ntfy.Checked, AlertTelegram = telegram.Checked,
+                NtfyTopic = topic.Text.Trim(), TelegramChat = chat.Text.Trim(), IntervalMin = ownInterval.Checked ? (int)interval.Value : 0 };
+            var buttons = ButtonRow();
+            Button test = null;
+            test = IconButton(Glyph.Bell, "이 노선 설정으로 시험 알림 보내기", TicketStyle.Face, TicketStyle.Forest, (s, e) =>
+            {
+                var value = entered();
+                var target = value.AlertTarget(settings);
+                if (!value.AlertPc && !target.UsesNtfy() && !target.UsesTelegram())
+                {
+                    MessageBox.Show(dialog, "켜 둔 알림이 없어 이 노선은 화면과 조회 기록에만 표시됩니다.", "시험 알림");
+                    return;
+                }
+                test.Enabled = false;
+                var msg = "알림 시험 · " + LabelOf(w.Url) + " · 진에어 18:05 할인석";
+                var page = FlightSearch.PageOf(w.Url);
+                var airlines = new[] { Airline.FindByCode("LJ") };
+                if (value.AlertPc) DesktopAlert("좌석이 생겼어요!", msg);
+                var sends = new List<Task<string>>();
+                if (target.UsesNtfy()) sends.Add(SendMobile(false, target, "좌석이 생겼어요!", msg, page, airlines));
+                if (target.UsesTelegram()) sends.Add(SendMobile(true, target, "좌석이 생겼어요!", msg, page, airlines));
+                Task.WhenAll(sends).ContinueWith(t =>
+                {
+                    var problems = t.Result.Where(r => r != null).ToArray();
+                    if (dialog.IsDisposed || !dialog.IsHandleCreated) return;
+                    dialog.BeginInvoke(new Action(() =>
+                    {
+                        if (dialog.IsDisposed) return;
+                        test.Enabled = true;
+                        if (problems.Length > 0) MessageBox.Show(dialog, "보내지 못한 곳이 있습니다.\n\n" + string.Join("\n", problems), "시험 알림");
+                    }));
+                });
+            });
+            var save = ActionButton("저장", TicketStyle.Forest, Color.White, (s, e) =>
+            {
+                var value = entered();
+                if (value.TelegramChat.Length > 0 && !Regex.IsMatch(value.TelegramChat, @"^(-?\d+|@\w+)$"))
+                {
+                    MessageBox.Show(dialog, "텔레그램 채팅 ID는 숫자(그룹은 -로 시작)나 @채널이름입니다.", dialog.Text);
+                    return;
+                }
+                if (!settings.Watches.Contains(w)) { dialog.DialogResult = DialogResult.Cancel; return; }
+                var old = new Watch();
+                old.CopyAlertsFrom(w);
+                var oldNtfy = w.PendingNtfy;
+                var oldTelegram = w.PendingTelegram;
+                var before = w.AlertTarget(settings);
+                w.CopyAlertsFrom(value);
+                w.ResetPending(before, w.AlertTarget(settings));
+                if (!SaveSettings())
+                {
+                    w.CopyAlertsFrom(old);
+                    w.PendingNtfy = oldNtfy;
+                    w.PendingTelegram = oldTelegram;
+                    return;
+                }
+                Log("노선 알림 변경: " + LabelOf(w.Url) + " · " + w.AlertSummary(settings));
+                dialog.DialogResult = DialogResult.OK;
+            });
+            var cancel = ActionButton("취소", TicketStyle.Face, TicketStyle.Muted, (s, e) => dialog.DialogResult = DialogResult.Cancel);
+            buttons.Controls.Add(test);
+            buttons.Controls.Add(save);
+            buttons.Controls.Add(cancel);
+            form.Controls.Add(buttons, 0, 5);
+            form.SetColumnSpan(buttons, 3);
+            dialog.Controls.Add(form);
+            dialog.AcceptButton = save;
+            dialog.CancelButton = cancel;
+            if (dialog.ShowDialog(this) == DialogResult.OK) RefreshDetails();
         }
     }
 
@@ -1072,7 +1218,7 @@ public partial class MainForm
 
     void ShowSettings()
     {
-        using (var dialog = Dialog("알림 설정", 330))
+        using (var dialog = Dialog("공통 알림 설정 · 모든 노선 기본값", 380))
         {
             var form = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 6, ColumnCount = 3 };
             form.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -1082,7 +1228,7 @@ public partial class MainForm
             form.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             form.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             var interval = new NumericUpDown { Minimum = MinInterval, Maximum = 60,
-                Value = Math.Max(MinInterval, Math.Min(60, settings.IntervalMin)), Anchor = AnchorStyles.Left, AccessibleName = "조회 간격(분)" };
+                Value = Math.Max(MinInterval, Math.Min(60, settings.IntervalMin)), Anchor = AnchorStyles.Left, AccessibleName = "기본 조회 간격(분)" };
             var topic = new TextBox { Anchor = AnchorStyles.Left | AnchorStyles.Right, Text = settings.NtfyTopic, AccessibleName = "ntfy 주제" };
             var token = new TextBox { Anchor = AnchorStyles.Left | AnchorStyles.Right, Text = settings.TelegramToken, UseSystemPasswordChar = true, AccessibleName = "텔레그램 봇 토큰" };
             var chat = new TextBox { Anchor = AnchorStyles.Left | AnchorStyles.Right, Text = settings.TelegramChat, AccessibleName = "텔레그램 채팅 ID" };
@@ -1120,8 +1266,13 @@ public partial class MainForm
                 rows[i][2].Anchor = AnchorStyles.Left;
                 form.Controls.Add(rows[i][2], 2, i);
             }
-            var hint = Caption("체크한 곳으로 휴대폰 알림을 보냅니다. 모두 끄거나 비우면 PC로만 알립니다.",
+            // 노선별 설정(노선의 종 버튼)과 역할을 나눈다: 여기는 휴대폰 연결과 기본값, 노선은 '이 노선만 다르게'.
+            int own = settings.Watches.Count(w => w.HasOwnAlerts);
+            var hint = Caption("모든 노선의 기본값입니다. 노선마다 받는 곳·간격을 바꾸려면 노선을 고른 뒤 종 버튼을 누르세요.\n" +
+                "체크를 풀면 노선 설정과 상관없이 모든 노선의 그 휴대폰 알림을 멈춥니다." +
+                (own > 0 ? "\n" + own + "개 노선은 따로 정한 알림·간격을 씁니다. 여기서 바꿔도 따로 정한 부분은 그대로입니다." : ""),
                 9, TicketStyle.Muted, false);
+            hint.AutoEllipsis = false;
             form.Controls.Add(hint, 0, 4);
             form.SetColumnSpan(hint, 3);
             Func<Settings> entered = () => new Settings { NtfyTopic = topic.Text.Trim(),
@@ -1162,12 +1313,8 @@ public partial class MainForm
                     MessageBox.Show(dialog, "텔레그램은 토큰과 채팅 ID를 함께 입력해 주세요.", dialog.Text);
                     return;
                 }
-                foreach (var w in settings.Watches)
-                {
-                    if (!target.UsesNtfy() || settings.NtfyTopic != target.NtfyTopic) w.PendingNtfy = new Dictionary<string, int>();
-                    if (!target.UsesTelegram() || settings.TelegramToken != target.TelegramToken || settings.TelegramChat != target.TelegramChat)
-                        w.PendingTelegram = new Dictionary<string, int>();
-                }
+                // 노선마다 실제로 보낼 곳(노선 설정을 덮어쓴 것)을 비교한다.
+                foreach (var w in settings.Watches) w.ResetPending(w.AlertTarget(settings), w.AlertTarget(target));
                 settings.IntervalMin = (int)interval.Value;
                 settings.NtfyTopic = target.NtfyTopic;
                 settings.TelegramToken = target.TelegramToken;

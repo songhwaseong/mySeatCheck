@@ -57,6 +57,91 @@ public class Watch
     internal string Unconfirmed = Waiting; // null이면 이번 실행에서 조회에 성공함
     static readonly string[] NoFares = new string[0];
 
+    // 노선별 알림·간격. 예전 설정 파일에는 없으므로 모두 켜짐·공통 설정으로 읽힌다.
+    // 휴대폰 알림은 알림 설정(공통)에서 켜 둔 곳만 보낸다. 주제·채팅 ID를 비우면 공통 값으로 보낸다. 봇 토큰은 공통 하나.
+    public bool AlertPc = true, AlertNtfy = true, AlertTelegram = true;
+    public string NtfyTopic = "", TelegramChat = "";
+    public int IntervalMin; // 0 = 공통 알림 설정의 간격
+    internal const int MinInterval = 2;
+
+    internal void CopyAlertsFrom(Watch other)
+    {
+        AlertPc = other.AlertPc;
+        AlertNtfy = other.AlertNtfy;
+        AlertTelegram = other.AlertTelegram;
+        NtfyTopic = other.NtfyTopic ?? "";
+        TelegramChat = other.TelegramChat ?? "";
+        IntervalMin = other.IntervalMin;
+    }
+
+    // 이 노선의 휴대폰 알림을 보낼 곳. 공통 설정에 이 노선의 켜고 끄기와 받는 곳을 덮어쓴 사본.
+    internal Settings AlertTarget(Settings common)
+    {
+        var target = common.Copy();
+        target.NtfyOn = common.NtfyOn && AlertNtfy;
+        target.TelegramOn = common.TelegramOn && AlertTelegram;
+        if (!string.IsNullOrEmpty(NtfyTopic)) target.NtfyTopic = NtfyTopic;
+        if (!string.IsNullOrEmpty(TelegramChat)) target.TelegramChat = TelegramChat;
+        return target;
+    }
+
+    // 받는 곳이 바뀌거나 꺼진 채널의 재전송 대기는 버린다(예전 좌석을 새로 받는 사람에게 보내지 않는다).
+    internal void ResetPending(Settings before, Settings after)
+    {
+        if (!after.UsesNtfy() || before.NtfyTopic != after.NtfyTopic) PendingNtfy = new Dictionary<string, int>();
+        if (!after.UsesTelegram() || before.TelegramToken != after.TelegramToken || before.TelegramChat != after.TelegramChat)
+            PendingTelegram = new Dictionary<string, int>();
+    }
+
+    // 공통 알림 설정과 다르게 정한 것이 하나라도 있으면 true
+    internal bool HasOwnAlerts
+    {
+        get { return !AlertPc || !AlertNtfy || !AlertTelegram || !string.IsNullOrEmpty(NtfyTopic) ||
+            !string.IsNullOrEmpty(TelegramChat) || IntervalMin > 0; }
+    }
+
+    internal int IntervalFor(int commonMin)
+    {
+        return IntervalMin > 0 ? Math.Max(MinInterval, IntervalMin) : Math.Max(MinInterval, commonMin);
+    }
+
+    internal string AlertSummary(Settings common)
+    {
+        var target = AlertTarget(common);
+        var to = new List<string>();
+        if (AlertPc) to.Add("PC");
+        if (target.UsesNtfy()) to.Add(string.IsNullOrEmpty(NtfyTopic) ? "ntfy" : "ntfy(따로)");
+        if (target.UsesTelegram()) to.Add(string.IsNullOrEmpty(TelegramChat) ? "텔레그램" : "텔레그램(따로)");
+        return "알림 " + (to.Count == 0 ? "없음" : string.Join("·", to)) + " · " + IntervalFor(common.IntervalMin) + "분마다" +
+            (IntervalMin > 0 ? "(따로)" : "");
+    }
+
+    // 조회 간격은 노선마다 따로 센다(이 노선의 마지막 조회가 끝난 때부터). MinValue 면 바로 조회한다.
+    // 설정 파일에는 남기지 않으므로 앱을 다시 켜면 모든 노선을 한 번씩 바로 조회한다.
+    internal DateTime LastRun = DateTime.MinValue;
+
+    internal void RunSoon() { LastRun = DateTime.MinValue; }
+
+    // commonMin 은 공통 알림 설정의 간격. 노선에 따로 정한 간격이 있으면 그것을 쓴다.
+    internal DateTime DueAt(int commonMin)
+    {
+        return LastRun == DateTime.MinValue ? DateTime.MinValue : LastRun.AddMinutes(IntervalFor(commonMin));
+    }
+
+    // 지금 조회할 차례인 노선 가운데 가장 오래 기다린 것. 없으면 null. 동시에 차례가 오면 목록 순서대로.
+    internal static Watch NextDue(IEnumerable<Watch> watches, int commonMin, DateTime now)
+    {
+        return watches.Where(w => w.Available && w.DueAt(commonMin) <= now)
+            .OrderBy(w => w.DueAt(commonMin)).FirstOrDefault();
+    }
+
+    // 다음에 차례가 오는 시각. 켜진 노선이 없으면 null.
+    internal static DateTime? NextDueAt(IEnumerable<Watch> watches, int commonMin)
+    {
+        var due = watches.Where(w => w.Available).Select(w => w.DueAt(commonMin)).ToList();
+        return due.Count == 0 ? (DateTime?)null : due.Min();
+    }
+
     internal IList<string> CurrentFares(bool running)
     {
         if (!running || !Available || (Unconfirmed != null && Unconfirmed != Partial)) return NoFares;
@@ -175,7 +260,7 @@ public class Card
 
 public partial class MainForm : Form
 {
-    const int MinInterval = 2;
+    const int MinInterval = Watch.MinInterval;
     static readonly string AppDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
     static readonly string DataDir = Path.Combine(AppDir, "data");
     static readonly string SettingsPath = Path.Combine(DataDir, "settings.json");
@@ -200,7 +285,7 @@ public partial class MainForm : Form
     bool busy, exiting, webReady, webFailed;
     Watch activeWatch;
     CancellationTokenSource activeCheck;
-    DateTime nextRun = DateTime.Now.AddSeconds(5);
+    readonly DateTime startAt = DateTime.Now.AddSeconds(5); // 앱을 켠 직후 잠깐 기다렸다 첫 조회
 
     public MainForm()
     {
@@ -265,9 +350,8 @@ public partial class MainForm : Form
         if (settings.Running == on) return;
         settings.Running = on;
         if (on)
-            foreach (var watch in settings.Watches) watch.Unconfirmed = Watch.Waiting;
+            foreach (var watch in settings.Watches) { watch.Unconfirmed = Watch.Waiting; watch.RunSoon(); }
         SaveSettings();
-        if (on) nextRun = DateTime.Now;
         Log(on ? "▶ 감시 시작" : "■ 감시 멈춤");
         UpdateRunUi();
         RefreshList();
@@ -319,7 +403,8 @@ public partial class MainForm : Form
     }
 
     // ───────────── 감시 목록 ─────────────
-    bool SaveWatch(Form dialog, string address, Watch previous, long maxPrice, bool notifyFirst)
+    // alertsFrom: 새 노선이 이어받을 노선별 알림·간격(복제할 때 원래 노선). 수정이면 previous 의 것을 이어받는다.
+    bool SaveWatch(Form dialog, string address, Watch previous, long maxPrice, bool notifyFirst, Watch alertsFrom = null)
     {
         var url = address.Trim();
         var search = FlightSearch.Read(url, true);
@@ -341,6 +426,7 @@ public partial class MainForm : Form
         if (settings.Watches.Any(w => w != previous && SamePage(w.Url, url))) { MessageBox.Show(dialog, "이미 감시 중인 주소입니다.", "좌석 감시"); return false; }
         var replacement = new Watch { Url = url, Enabled = previous == null || previous.Enabled,
             MaxPrice = Math.Max(0, maxPrice), NotifyFirst = notifyFirst };
+        if ((previous ?? alertsFrom) != null) replacement.CopyAlertsFrom(previous ?? alertsFrom);
         var proposed = settings.Copy();
         proposed.Watches = new List<Watch>(settings.Watches);
         if (previous == null) proposed.Watches.Add(replacement);
@@ -354,7 +440,7 @@ public partial class MainForm : Form
         Log((previous == null ? "감시 추가: " : "감시 조건 변경: ") + LabelOf(url) + " · " + RangeLabel(url) +
             (search.ConditionLabel.Length > 0 ? " · " + search.ConditionLabel : "") +
             (maxPrice > 0 ? " · " + Watch.PriceLabel(maxPrice) : ""));
-        nextRun = DateTime.Now;
+        // 새 노선(replacement)은 LastRun 이 비어 있어 바로 조회된다. 다른 노선의 차례는 그대로 둔다.
         return true;
     }
 
@@ -464,22 +550,22 @@ public partial class MainForm : Form
         if (!settings.Running) { nextLabel.Text = "멈춤"; return; }
         if (!settings.Watches.Any(w => w.Available)) { nextLabel.Text = "감시 중인 노선 없음"; return; }
         if (!webReady) { nextLabel.Text = webFailed ? "조회 화면을 열 수 없습니다." : "조회 화면 준비 중…"; return; }
-        var left = nextRun - DateTime.Now;
-        nextLabel.Text = left.TotalSeconds > 0 ? "다음 확인 " + nextRun.ToString("HH:mm:ss") : "";
-        if (left.TotalSeconds > 0) return;
+        int interval = Interval;
+        var next = Watch.NextDueAt(settings.Watches, interval);
+        var at = next.HasValue && next.Value > startAt ? next.Value : startAt;
+        nextLabel.Text = at > DateTime.Now ? "다음 확인 " + at.ToString("HH:mm:ss") : "";
+        if (at > DateTime.Now) return;
 
         busy = true;
-        bool finished = false;
         try
         {
-            // 조회 도중 켜거나 추가하거나 조건을 바꾼 노선도 이번 차례에 이어서 조회한다(목록을 미리 복사해 두지 않는다).
-            var done = new HashSet<Watch>();
+            // 차례가 온 노선을 하나씩 조회한다. 조회 도중 켜거나 추가하거나 조건을 바꾼 노선도 차례가 오면 이어서 조회한다.
             while (true)
             {
                 if (exiting || !settings.Running) return;
-                var w = settings.Watches.FirstOrDefault(x => x.Available && !done.Contains(x));
+                interval = Interval;
+                var w = Watch.NextDue(settings.Watches, interval, DateTime.Now);
                 if (w == null) break;
-                done.Add(w);
                 using (var check = new CancellationTokenSource())
                 {
                     activeWatch = w;
@@ -507,6 +593,8 @@ public partial class MainForm : Form
                     {
                         activeWatch = null;
                         activeCheck = null;
+                        // 실패하거나 취소돼도 이 노선의 간격은 지금부터 다시 센다(같은 노선만 계속 다시 여는 것을 막는다).
+                        w.LastRun = DateTime.Now;
                         RecordCheck(w, timing, check.IsCancellationRequested, failure);
                     }
                     if (check.IsCancellationRequested) continue;
@@ -514,7 +602,6 @@ public partial class MainForm : Form
                 RefreshList();
                 SaveSettings();
             }
-            finished = true;
         }
         catch (Exception ex)
         {
@@ -523,12 +610,11 @@ public partial class MainForm : Form
         finally
         {
             busy = false;
-            // 이미 조회한 노선을 이번 차례 중에 다시 켜면 '조회 대기'로 남는다. 그런 노선이 있으면 3분을 기다리지 않는다.
-            bool waiting = finished && settings.Running && settings.Watches.Any(x => x.Available && x.Unconfirmed == Watch.Waiting);
-            nextRun = waiting ? DateTime.Now : DateTime.Now.AddMinutes(Math.Max(MinInterval, settings.IntervalMin));
             if (!exiting) UpdateCheckAvailability();
         }
     }
+
+    int Interval { get { return Math.Max(MinInterval, settings.IntervalMin); } }
 
     class ScanResult
     {
@@ -575,7 +661,7 @@ public partial class MainForm : Form
             w.Seats.Clear();
             w.OverPrice = 0;
             w.HiddenSchedules = 0;
-            w.Observe(new List<Card>(), true, settings);
+            w.Observe(new List<Card>(), true, w.AlertTarget(settings));
             Log(label + " · " + RangeLabel(w.Url) + " 출발 좌석 없음" + took);
             return;
         }
@@ -599,7 +685,7 @@ public partial class MainForm : Form
             .OrderBy(c => c.Dep, StringComparer.Ordinal).ThenBy(c => c.Price).ToList();
         w.OverPrice = matching.Count - hits.Count;
         w.HiddenSchedules = r.HiddenSchedules;
-        var newOnes = w.Observe(hits, r.Complete, settings);
+        var newOnes = w.Observe(hits, r.Complete, w.AlertTarget(settings));
         w.Seats = hits.Select(c => c.Dep + "→" + c.Arr + " " + c.Airline + " " + c.Cls + " " + c.Price.ToString("N0") + "원").ToList();
         w.Unconfirmed = r.Complete ? null : Watch.Partial;
         Log(label + " · " + RangeLabel(w.Url) + (r.Complete ? " 출발 " : " 출발 · 일부 확인 ") + (hits.Count > 0 ? hits.Count + "개 좌석" + took + "\r\n    " + string.Join("\r\n    ", w.Seats) : "확인된 좌석 0개" + took) +
@@ -609,8 +695,8 @@ public partial class MainForm : Form
         if (newOnes.Count > 0)
         {
             var msg = FareMessage(label, newOnes);
-            DesktopAlert("좌석이 생겼어요!", msg);
-            Log("★ 알림: " + msg);
+            if (w.AlertPc) DesktopAlert("좌석이 생겼어요!", msg);
+            Log((w.AlertPc ? "★ 알림: " : "★ 새 좌석(PC 알림 꺼짐): ") + msg);
         }
         if (w.PendingNtfy.Count > 0 || w.PendingTelegram.Count > 0)
         {
@@ -854,7 +940,7 @@ public partial class MainForm : Form
         var seats = hits.Where(c => pending.ContainsKey(c.Key)).ToList();
         if (seats.Count == 0) return;
         var channel = telegram ? "텔레그램" : "ntfy";
-        var problem = await SendMobile(telegram, settings, "좌석이 생겼어요!", FareMessage(LabelOf(w.Url), seats),
+        var problem = await SendMobile(telegram, w.AlertTarget(settings), "좌석이 생겼어요!", FareMessage(LabelOf(w.Url), seats),
             FlightSearch.PageOf(w.Url), Airline.WithSites(seats));
         if (exiting || !settings.Watches.Contains(w) || pending != (telegram ? w.PendingTelegram : w.PendingNtfy)) return;
         bool exhausted = Watch.FinishDelivery(pending, seats, problem == null);
