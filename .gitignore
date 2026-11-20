@@ -7,3 +7,6 @@ app/data/
 
 # Packages built by package.bat
 dist/
+
+# Built by build.bat (rebuild from src\)
+*.exe
