@@ -23,13 +23,33 @@ internal sealed class TicketRoute
         {"KWJ","광주"}, {"CJJ","청주"}, {"USN","울산"}, {"RSU","여수"}, {"HIN","사천"},
         {"KPO","포항경주"}, {"KUV","군산"}, {"WJU","원주"}, {"YNY","양양"}, {"MWX","무안"}
     };
+    // 국제선 공항 이름(카드 표시와 입력 제안용). 여기에 없는 코드도 감시할 수 있고, 그때는 코드로 보인다.
+    internal static readonly Dictionary<string, string> Airports = new Dictionary<string, string> {
+        {"ICN","인천"}, {"GMP","김포"}, {"PUS","부산"}, {"CJU","제주"}, {"TAE","대구"}, {"CJJ","청주"}, {"MWX","무안"}, {"YNY","양양"},
+        {"NRT","도쿄 나리타"}, {"HND","도쿄 하네다"}, {"KIX","오사카 간사이"}, {"FUK","후쿠오카"}, {"CTS","삿포로"},
+        {"OKA","오키나와"}, {"NGO","나고야"}, {"KOJ","가고시마"}, {"KMJ","구마모토"}, {"OIT","오이타"}, {"MYJ","마쓰야마"},
+        {"TPE","타이베이 타오위안"}, {"TSA","타이베이 쑹산"}, {"KHH","가오슝"}, {"HKG","홍콩"}, {"MFM","마카오"},
+        {"PVG","상하이 푸둥"}, {"SHA","상하이 훙차오"}, {"PEK","베이징 서우두"}, {"PKX","베이징 다싱"}, {"TAO","칭다오"},
+        {"BKK","방콕"}, {"HKT","푸껫"}, {"CNX","치앙마이"}, {"DAD","다낭"}, {"CXR","나트랑"}, {"PQC","푸꾸옥"},
+        {"SGN","호찌민"}, {"HAN","하노이"}, {"CEB","세부"}, {"MNL","마닐라"}, {"SIN","싱가포르"}, {"KUL","쿠알라룸푸르"},
+        {"BKI","코타키나발루"}, {"DPS","발리"}, {"GUM","괌"}, {"SPN","사이판"}, {"ULN","울란바토르"},
+        {"HNL","호놀룰루"}, {"LAX","로스앤젤레스"}, {"SFO","샌프란시스코"}, {"JFK","뉴욕"}, {"SEA","시애틀"},
+        {"YVR","밴쿠버"}, {"SYD","시드니"}, {"CDG","파리"}, {"LHR","런던"}, {"FRA","프랑크푸르트"}, {"FCO","로마"},
+        {"BCN","바르셀로나"}, {"IST","이스탄불"}, {"DXB","두바이"}
+    };
     internal readonly string CitiesLabel, Codes, DateLabel, TimeLabel;
+
+    internal static string PlaceName(string code)
+    {
+        string name;
+        return Cities.TryGetValue(code, out name) || Airports.TryGetValue(code, out name) ? name : code;
+    }
 
     internal TicketRoute(string url, string time)
     {
         TimeLabel = time.Replace("~", "–");
         var match = Regex.Match(Uri.UnescapeDataString(url),
-            @"/([A-Z]{3}):(?:airport|city)-([A-Z]{3}):(?:airport|city)-(\d{8})");
+            @"/([A-Z]{3})(?::(?:airport|city))?-([A-Z]{3})(?::(?:airport|city))?-(\d{8})");
         if (!match.Success)
         {
             CitiesLabel = "네이버 항공권";
@@ -37,9 +57,8 @@ internal sealed class TicketRoute
             DateLabel = "";
             return;
         }
-        string from = match.Groups[1].Value, to = match.Groups[2].Value, city;
-        CitiesLabel = (Cities.TryGetValue(from, out city) ? city : from) + " → " +
-            (Cities.TryGetValue(to, out city) ? city : to);
+        string from = match.Groups[1].Value, to = match.Groups[2].Value;
+        CitiesLabel = PlaceName(from) + " → " + PlaceName(to);
         Codes = from + " → " + to;
         DateTime date;
         DateLabel = DateTime.TryParseExact(match.Groups[3].Value, "yyyyMMdd", CultureInfo.InvariantCulture,

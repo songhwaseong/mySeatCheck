@@ -16,36 +16,36 @@ class DomesticSearchTest
         var day = DateTime.Today.AddDays(2);
         var dayText = day.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
         var evening = new[] { "18:00-21:00", "21:00-24:00" };
-        var url = DomesticSearch.Build("CJU", "GMP", day, evening.Reverse(), null);
+        var url = FlightSearch.Build("CJU", "GMP", day, evening.Reverse(), null);
         Assert(url == "https://flight.naver.com/flights/domestic/CJU:airport-GMP:airport-" + dayText +
             "?adult=1&fareType=YC&depTime0=18:00-21:00,21:00-24:00");
-        var saved = DomesticSearch.Read(url);
+        var saved = FlightSearch.Read(url);
         Assert(saved.From == "CJU" && saved.To == "GMP" && saved.Date == day && saved.Times.SequenceEqual(evening));
-        Assert(!DomesticSearch.Build("CJU", "PUS", day, new string[0], null).Contains("depTime0"));
-        Assert(!DomesticSearch.Build("CJU", "PUS", day, DomesticSearch.TimeSlots, null).Contains("depTime0"));
+        Assert(!FlightSearch.Build("CJU", "PUS", day, new string[0], null).Contains("depTime0"));
+        Assert(!FlightSearch.Build("CJU", "PUS", day, FlightSearch.TimeSlots, null).Contains("depTime0"));
         var pasted = url.Replace("GMP:airport", "GMP%3Acity").Replace("adult=1", "adult=2&option=A&option=B")
             .Replace(",", "%2C") + "#result";
-        saved = DomesticSearch.Read(pasted);
-        Assert(DomesticSearch.Build("CJU", "GMP", day, evening, saved) == pasted);
-        var edited = DomesticSearch.Build("PUS", "GMP", day.AddDays(1), new[] { evening[1] }, saved);
+        saved = FlightSearch.Read(pasted);
+        Assert(FlightSearch.Build("CJU", "GMP", day, evening, saved) == pasted);
+        var edited = FlightSearch.Build("PUS", "GMP", day.AddDays(1), new[] { evening[1] }, saved);
         Assert(edited.Contains("PUS:airport-GMP:city-") && edited.Contains("adult=2&option=A&option=B") &&
             edited.EndsWith("depTime0=21:00-24:00#result"));
-        Assert(DomesticSearch.Read(url.Replace("18:00-21:00", "18:05-19:05")) == null);
-        Assert(DomesticSearch.Read(url.Replace(dayText + "?", dayText + "/return?")) == null);
-        try { DomesticSearch.Build("CJU", "CJU", day, evening, null); throw new Exception("Same airport accepted"); }
+        Assert(FlightSearch.Read(url.Replace("18:00-21:00", "18:05-19:05")) == null);
+        Assert(FlightSearch.Read(url.Replace(dayText + "?", dayText + "/return?")) == null);
+        try { FlightSearch.Build("CJU", "CJU", day, evening, null); throw new Exception("Same airport accepted"); }
         catch (ArgumentException) { }
-        try { DomesticSearch.Build("CJU", "GMP", DateTime.Today.AddDays(-1), evening, null); throw new Exception("Past date accepted"); }
+        try { FlightSearch.Build("CJU", "GMP", DateTime.Today.AddDays(-1), evening, null); throw new Exception("Past date accepted"); }
         catch (ArgumentException) { }
 
-        var filtered = DomesticSearch.Build("CJU", "GMP", day, evening, null, new[] { "LJ", "7C", "LJ" });
-        Assert(filtered.Contains("airline=7C,LJ") && DomesticSearch.Read(filtered).Airlines.SequenceEqual(new[] { "7C", "LJ" }));
+        var filtered = FlightSearch.Build("CJU", "GMP", day, evening, null, new[] { "LJ", "7C", "LJ" });
+        Assert(filtered.Contains("airline=7C,LJ") && FlightSearch.Read(filtered).Airlines.SequenceEqual(new[] { "7C", "LJ" }));
         var encoded = url + "&airline=7C%2CLJ&airline=TW&child=1";
-        var airlineSearch = DomesticSearch.Read(encoded);
+        var airlineSearch = FlightSearch.Read(encoded);
         Assert(airlineSearch.Airlines.SequenceEqual(new[] { "7C", "LJ", "TW" }));
-        Assert(DomesticSearch.Build("CJU", "GMP", day, evening, airlineSearch, airlineSearch.Airlines.Reverse()) == encoded);
-        var allAirlines = DomesticSearch.Build("CJU", "GMP", day, evening, airlineSearch, new string[0]);
+        Assert(FlightSearch.Build("CJU", "GMP", day, evening, airlineSearch, airlineSearch.Airlines.Reverse()) == encoded);
+        var allAirlines = FlightSearch.Build("CJU", "GMP", day, evening, airlineSearch, new string[0]);
         Assert(!allAirlines.Contains("airline=") && allAirlines.Contains("child=1"));
-        Assert(DomesticSearch.AirlinesOf(filtered + "#&airline=KE").SequenceEqual(new[] { "7C", "LJ" }));
+        Assert(FlightSearch.AirlinesOf(filtered + "#&airline=KE").SequenceEqual(new[] { "7C", "LJ" }));
 
         var matches = typeof(MainForm).GetMethod("MatchesWatch", BindingFlags.NonPublic | BindingFlags.Static);
         var ranges = new List<string[]> { new[] { "18:00", "21:00" } };

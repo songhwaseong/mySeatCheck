@@ -34,10 +34,11 @@ class WatchRecoveryTest
         watch.UpdateHealth(true, new DateTime(2026, 11, 19, 14, 2, 0));
         watch.UpdateHealth(false, DateTime.Now);
         Check(watch.LastSuccess == "2026-11-19 14:02:00" && watch.FailureStreak == 1, "health history");
-        var route = DomesticSearch.Read(watch.Url + "?adult=2&depTime0=18:05-19:05#result", true);
+        var route = FlightSearch.Read(watch.Url + "?adult=2&depTime0=18:05-19:05#result", true);
         Check(route.WithDate(new DateTime(2099, 12, 30)).EndsWith("20991230?adult=2&depTime0=18:05-19:05#result"), "copy custom search");
-        Check(DomesticSearch.Read(watch.Url.Replace("domestic", "international"), true) == null &&
-            DomesticSearch.Read(watch.Url + "?depTime0=32:01-34:05", true) == null, "unsupported search");
+        Check(FlightSearch.Read(watch.Url.Replace("domestic", "international"), true).International &&
+            FlightSearch.Read(watch.Url.Replace("domestic", "multicity"), true) == null &&
+            FlightSearch.Read(watch.Url + "?depTime0=32:01-34:05", true) == null, "unsupported search");
         var archive = new Watch { Url = watch.Url };
         archive.EvaluateRoute(new DateTime(2099, 12, 31));
         Check(archive.Available, "departure day remains active");

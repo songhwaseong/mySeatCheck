@@ -35,7 +35,7 @@ test('사이트 거르기가 먹은 매진 화면을 알아본다', () => {
 
 test('실측 화면 글자(samples)도 깨지지 않는다', () => {
   const dir = path.join(__dirname, 'samples');
-  for (const f of fs.readdirSync(dir)) {
+  for (const f of fs.readdirSync(dir).filter(name => name.endsWith('.txt'))) {
     const t = fs.readFileSync(path.join(dir, f), 'utf8');
     const r = SeatScan.parseText(t);
     const lines = (t.match(/^\d{2}:\d{2}CJU$/gm) || []).length;
@@ -113,6 +113,79 @@ test('항공사 로고의 코드를 읽고 공통 이미지는 제외한다', ()
   const firstPage = scanRows(Array(50).fill(example), { logos: [path + 'LJ.png'] });
   assert.strictEqual(firstPage.complete, false);
   assert.strictEqual(firstPage.cards[0].airlineCode, 'LJ');
+});
+
+// ───────── 국제선 ─────────
+const intlRow = [
+  'CO2 60%', '대한항공, 일본항공', '이벤트혜택', '대한항공 공동운항', '18:50ICN', '09:30NRT', '+1일',
+  '경유 1, 14시간 40분', '동일가 다른 일정2', '성인/KB국민카드', '473,200원~', '1만원 할인', '편도', '463,200', '원~',
+  '최대 10,000원 적립', '로그인 후 특가확인'
+].join('\n');
+
+test('국제선 카드: 공동운항 줄을 건너뛰고 할인 전 가격과 +1일을 읽는다', () => {
+  assert.deepStrictEqual(SeatScan.parseInternationalRow(intlRow),
+    { airline: '대한항공, 일본항공', dep: '18:50', arr: '09:30+1', cls: '경유 1', price: 473200, intl: true });
+  const plain = 'CO2 15%\n제주항공, 젯스타 재팬\n16:20ICN\n21:55NRT\n경유 1, 05시간 35분\n성인/모든 결제수단\n편도\n355,565\n원~';
+  assert.deepStrictEqual(SeatScan.parseInternationalRow(plain),
+    { airline: '제주항공, 젯스타 재팬', dep: '16:20', arr: '21:55', cls: '경유 1', price: 355565, intl: true });
+  assert.strictEqual(SeatScan.parseInternationalRow('최저가\nCO2 12%\n트리니티항공\n08:35ICN\n10:55NRT\n직항, 02시간 20분\n편도\n139,000\n원~').cls, '직항');
+  assert.strictEqual(SeatScan.parseInternationalRow('운임 조회 중'), null);
+  assert.strictEqual(SeatScan.parseInternationalRow('트리니티항공\n08:35ICN\n10:55NRT\n직항, 02시간 20분'), null);
+});
+
+// 브라우저 없이 국제선 결과 화면을 흉내 낸다. rows 는 실측 픽스처와 같은 { text, logos } 모양.
+function scanIntl(rows, { done = true, loadingBadge = false, subopen = [], extra = '' } = {}) {
+  const buttons = rows.map(row => ({ parentElement: {
+    innerText: row.text,
+    querySelectorAll: selector => selector === '[data-area="logos"] img'
+      ? (row.logos || []).map(src => ({ getAttribute: name => name === 'src' ? src : null })) : []
+  } }));
+  const marker = { className: 'international_search_condition_loading_area__p3h5v' + (done ? ' international_loading_done__3FFWt' : '') };
+  return SeatScan.scanPage({
+    body: { innerText: '가격 낮은 순\n' + rows.map(r => r.text).join('\n') + extra },
+    readyState: 'complete',
+    location: { href: 'https://flight.naver.com/flights/international/ICN-NRT-20261220?adult=1&fareType=Y' },
+    querySelector: selector => {
+      if (selector === '[aria-label="조건에 맞는 항공편 검색중"]') return marker;
+      if (selector === '[aria-label="Loading..."][aria-busy="true"]') return loadingBadge ? {} : null;
+      return null;
+    },
+    querySelectorAll: selector => {
+      if (selector === 'button[data-event-area-code="isb.schedule1"]') return buttons;
+      if (selector === 'button[data-event-area-code="isr.subopen"]') return subopen.map(innerText => ({ innerText }));
+      return [];
+    }
+  });
+}
+
+test('국제선 실측 화면(samples/international)의 모든 행을 읽는다', () => {
+  const dir = path.join(__dirname, 'samples', 'international');
+  for (const f of fs.readdirSync(dir)) {
+    const sample = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+    const r = scanIntl(sample.rows, { subopen: sample.subopen });
+    assert.strictEqual(r.complete, true, f);
+    assert.strictEqual(r.cards.length, sample.rows.length, f + ': 모든 행을 카드로');
+    assert.ok(r.cards.every(c => /^\d{2}:\d{2}$/.test(c.dep) && /^\d{2}:\d{2}(\+\d)?$/.test(c.arr) && c.price > 0 &&
+      /^(직항|경유 \d)$/.test(c.cls) && c.airlineCode), f + ': 카드 모양');
+    assert.ok(r.hiddenSchedules > 0, f + ': 접힌 일정 수');
+  }
+});
+
+test('국제선은 loading_done 클래스가 붙기 전에는 아무것도 확정하지 않는다', () => {
+  const row = { text: intlRow, logos: ['https://x/flight/vertical-static/flight/airlines/KE.png', 'https://x/flight/vertical-static/flight/airlines/JL.png'] };
+  const done = scanIntl([row]);
+  assert.strictEqual(done.complete, true);
+  assert.deepStrictEqual(done.cards[0].airlineCodes, ['KE', 'JL']);
+  assert.strictEqual(done.cards[0].airlineCode, 'KE');
+  for (const state of [{ done: false }, { loadingBadge: true }]) {
+    const r = scanIntl([row], state);
+    assert.strictEqual(r.complete, false);
+    assert.deepStrictEqual(r.cards, []);
+  }
+  assert.strictEqual(scanIntl([row, { text: '운임 조회 중' }]).complete, false, '못 읽은 행이 있으면 미완료');
+  assert.strictEqual(scanIntl([], { extra: '\n조건에 맞는 항공편이 없습니다' }).none, true);
+  assert.strictEqual(scanIntl([], { done: false, extra: '\n조건에 맞는 항공편이 없습니다' }).none, false);
+  assert.strictEqual(scanIntl([row], { subopen: ['동일가 다른 일정3', '동일가 다른 일정2'] }).hiddenSchedules, 5);
 });
 
 console.log(`\n${n}개 통과`);

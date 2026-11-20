@@ -37,12 +37,92 @@ var SeatScan = (function () {
     return { cards: cards, none: NONE_RE.test(b), body: b };
   }
 
+  // 국제선 편 카드 한 줄(2026-11-20 실측, 인천→나리타):
+  //   최저가 / CO2 12% / 아시아나항공, 일본항공 / 이벤트혜택 / 대한항공 공동운항 / 18:50ICN / 09:30NRT / +1일 /
+  //   경유 1, 14시간 40분 / 동일가 다른 일정2 / 성인/KB국민카드 / 473,200원~ / 1만원 할인 / 편도 / 463,200 / 원~
+  //   - '편도' 아래 큰 가격은 그 카드사 할인가다. 할인 전 가격(473,200원~)이 있으면 그 값을 쓴다(국내선과 같은 기준).
+  //   - 시각 바로 위 줄은 항공사가 아닐 수 있다(이벤트혜택, ○○ 공동운항).
+  var TIME_LINE = /^(\d{2}:\d{2})[A-Z]{3}$/;
+  var NOT_AIRLINE = /^(이벤트혜택|CO2\b.*|.*공동운항)$/;
+
+  function parseInternationalRow(text) {
+    var lines = String(text || '').split('\n').map(function (l) { return l.trim(); })
+      .filter(function (l) { return l.length > 0; });
+    for (var i = 1; i + 1 < lines.length; i++) {
+      var dep = lines[i].match(TIME_LINE), arr = lines[i + 1].match(TIME_LINE);
+      if (!dep || !arr) continue;
+      var airline = null;
+      for (var a = i - 1; a >= 0; a--) if (!NOT_AIRLINE.test(lines[a])) { airline = lines[a]; break; }
+      var rest = lines.slice(i + 2);
+      var days = rest.length && rest[0].match(/^\+(\d)일$/);
+      var cls = null;
+      for (var s = 0; s < rest.length && s < 3; s++) {
+        var stop = rest[s].match(/^(직항|경유\s*\d+)(?:,|$)/);
+        if (stop) { cls = stop[1].replace(/\s+/g, ' ').replace(/경유(\d)/, '경유 $1'); break; }
+      }
+      var joined = rest.join('\n');
+      var shown = joined.match(/(?:^|\n)편도\n([\d,]+)\n?원/);
+      if (!airline || !cls || !shown) return null;
+      var before = joined.match(/(?:^|\n)([\d,]+)원~?\n[^\n]*할인\n편도\n/);
+      return {
+        airline: airline, dep: dep[1], arr: arr[1] + (days ? '+' + days[1] : ''), cls: cls,
+        price: Number((before ? before[1] : shown[1]).replace(/,/g, '')), intl: true
+      };
+    }
+    return null;
+  }
+
+  function logoCodes(element) {
+    var codes = [];
+    var logos = element.querySelectorAll ? element.querySelectorAll('[data-area="logos"] img') : [];
+    for (var i = 0; i < logos.length; i++) {
+      var code = (logos[i].getAttribute('src') || '').match(/\/vertical-static\/flight\/airlines\/([A-Z0-9]{2})\.png(?:[?#]|$)/i);
+      if (code && codes.indexOf(code[1].toUpperCase()) < 0) codes.push(code[1].toUpperCase());
+    }
+    return codes;
+  }
+
+  // 국제선 목록은 한 번에 모두 뜨고(스크롤해도 늘지 않음) 페이지 나눔이 없다.
+  // 로딩 표시는 끝난 뒤에도 aria-busy="true" 로 남아 있어서, 끝났다는 신호는 loading_done 클래스다.
+  // 맨 위 '인기 항공편'(isp.topschedule1)은 아래 목록과 겹치므로 isb.schedule1 행만 읽는다.
+  // '동일가 다른 일정 N'으로 접힌 편은 펼치지 않는다(hiddenSchedules 로 개수만 알린다).
+  function scanInternational(doc) {
+    var t = doc.body ? doc.body.innerText : '';
+    var marker = doc.querySelector('[aria-label="조건에 맞는 항공편 검색중"]');
+    var done = !!marker && /loading_done/.test(marker.className || '') &&
+      !doc.querySelector('[aria-label="Loading..."][aria-busy="true"]');
+    var rows = doc.querySelectorAll('button[data-event-area-code="isb.schedule1"]');
+    var cards = [];
+    for (var i = 0; i < rows.length; i++) {
+      var element = rows[i].parentElement;
+      var card = parseInternationalRow(element.innerText);
+      if (!card) continue;
+      var codes = logoCodes(element);
+      if (codes.length) { card.airlineCode = codes[0]; card.airlineCodes = codes; }
+      cards.push(card);
+    }
+    var hidden = 0, more = doc.querySelectorAll('button[data-event-area-code="isr.subopen"]');
+    for (var h = 0; h < more.length; h++) {
+      var count = (more[h].innerText || '').match(/(\d+)\s*$/);
+      if (count) hidden += Number(count[1]);
+    }
+    var shownText = body(t);
+    var complete = done && rows.length > 0 && cards.length === rows.length;
+    return {
+      cards: done ? cards : [],
+      none: done && !rows.length && NONE_RE.test(shownText),
+      complete: complete, pageBoundary: false, hiddenSchedules: hidden,
+      bodyHead: shownText.slice(0, 4000), ready: doc.readyState, url: doc.location.href
+    };
+  }
+
   // 국내선 페이지는 50개씩 이어 붙이며, 마지막 응답이 50개 미만이면 더 불러오지 않는다.
   // 정확한 배수는 화면만으로 마지막 빈 응답과 아직 안 읽은 다음 페이지를 구분할 수 없다.
   var DOMESTIC_PAGE_SIZE = 50;
 
   function scanPage(doc) {
     doc = doc || document;
+    if (/\/flights\/international\//.test(doc.location.href)) return scanInternational(doc);
     var t = doc.body ? doc.body.innerText : '';
     var list = doc.querySelector('[data-type="domestic"]');
     var r = parseText(list ? list.innerText : t);
@@ -92,6 +172,6 @@ var SeatScan = (function () {
     return moved;
   }
 
-  return { parseText: parseText, scanPage: scanPage, scrollDown: scrollDown };
+  return { parseText: parseText, parseInternationalRow: parseInternationalRow, scanPage: scanPage, scrollDown: scrollDown };
 })();
 if (typeof module !== 'undefined') module.exports = SeatScan;

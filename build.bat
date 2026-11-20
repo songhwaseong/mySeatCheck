@@ -17,7 +17,7 @@ if not exist "%OUTDIR%" mkdir "%OUTDIR%"
   /r:lib\Microsoft.Web.WebView2.Core.dll /r:lib\Microsoft.Web.WebView2.WinForms.dll ^
   /win32icon:src\SeatWatch.ico /resource:src\SeatWatch.ico,SeatWatch.ico ^
   /resource:src\parse.js,parse.js ^
-  "/out:%OUTDIR%\SeatWatch.exe" src\SeatWatch.cs src\TicketDashboard.cs src\TicketCard.cs src\DomesticSearch.cs src\CheckHistory.cs src\SettingsStore.cs
+  "/out:%OUTDIR%\SeatWatch.exe" src\SeatWatch.cs src\TicketDashboard.cs src\TicketCard.cs src\FlightSearch.cs src\CheckHistory.cs src\SettingsStore.cs
 if errorlevel 1 exit /b 1
 
 copy /Y lib\Microsoft.Web.WebView2.Core.dll "%OUTDIR%\" >nul || exit /b 1

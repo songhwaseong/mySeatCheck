@@ -16,6 +16,7 @@ public partial class MainForm
     Panel dashboard, seatsPanel;
     Label heading, detailStatus, emptySeats, checksSummary;
     Button emptyDeck, openRoute, editRoute, copyRoute, watchToggle, removeRoute, liveButton, logButton, checkButton;
+    Button domesticTab, internationalTab;
     DataGridView fares, checksTable;
     TableLayoutPanel historyView;
     // 조회 기록 표와 요약에 쓰는 최근 기록(오래된 순). 파일에는 더 많이 남아 있다.
@@ -94,10 +95,24 @@ public partial class MainForm
         Controls.Add(layout);
 
         var header = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = TicketStyle.Forest,
-            Padding = new Padding(22, 0, 18, 0), ColumnCount = 2, Margin = Padding.Empty };
+            Padding = new Padding(22, 0, 18, 0), ColumnCount = 3, Margin = Padding.Empty };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        header.Controls.Add(Caption("✈  SeatWatch", 20, Color.White, true), 0, 0);
+        var brand = Caption("✈  SeatWatch", 20, Color.White, true);
+        brand.AutoSize = true;
+        brand.Anchor = AnchorStyles.Left;
+        brand.Dock = DockStyle.None;
+        header.Controls.Add(brand, 0, 0);
+        // 탑승권 목록을 국내선·국제선으로 나눠 보는 탭. 감시와 알림은 탭과 상관없이 모두 계속한다.
+        var kinds = ButtonRow();
+        kinds.Anchor = AnchorStyles.Left;
+        kinds.Margin = new Padding(24, 0, 0, 0);
+        domesticTab = ActionButton("국내선", TicketStyle.Forest, Color.White, (s, e) => ShowRouteKind(false));
+        internationalTab = ActionButton("국제선", TicketStyle.Forest, Color.White, (s, e) => ShowRouteKind(true));
+        kinds.Controls.Add(domesticTab);
+        kinds.Controls.Add(internationalTab);
+        header.Controls.Add(kinds, 1, 0);
         var commands = ButtonRow();
         runBtn = IconButton(Glyph.Pause, "", TicketStyle.Orange, Color.White, (s, e) => SetRunning(!settings.Running));
         commands.Controls.Add(runBtn);
@@ -105,7 +120,7 @@ public partial class MainForm
         commands.Controls.Add(IconButton(Glyph.Add, "감시 추가", TicketStyle.Forest, Color.White, (s, e) => ShowWatchDialog(null)));
         checkButton = IconButton(Glyph.Refresh, "지금 확인", TicketStyle.Face, TicketStyle.Forest, (s, e) => CheckNow());
         commands.Controls.Add(checkButton);
-        header.Controls.Add(commands, 1, 0);
+        header.Controls.Add(commands, 2, 0);
         layout.Controls.Add(header, 0, 0);
 
         var workspace = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
@@ -343,14 +358,49 @@ public partial class MainForm
         if (!anyEnabled) nextLabel.Text = "감시 중인 노선 없음";
     }
 
+    List<Watch> VisibleWatches()
+    {
+        return settings.Watches.Where(w => FlightSearch.IsInternational(w.Url) == settings.InternationalTab).ToList();
+    }
+
+    void ShowRouteKind(bool international)
+    {
+        ShowView(dashboard);
+        if (settings.InternationalTab == international) return;
+        settings.InternationalTab = international;
+        SaveSettings();
+        RefreshList();
+    }
+
+    // 선택한 탭은 밝은 바탕, 나머지는 머리 띠와 같은 색. 탭 이름 옆에 노선 수를 붙인다.
+    void UpdateTabs()
+    {
+        int international = settings.Watches.Count(w => FlightSearch.IsInternational(w.Url));
+        StyleTab(domesticTab, "국내선", settings.Watches.Count - international, !settings.InternationalTab);
+        StyleTab(internationalTab, "국제선", international, settings.InternationalTab);
+        emptyDeck.Text = settings.InternationalTab ? "＋  첫 국제선 감시 노선 추가" : "＋  첫 국내선 감시 노선 추가";
+    }
+
+    static void StyleTab(Button tab, string name, int count, bool selected)
+    {
+        tab.Text = count > 0 ? name + "  " + count : name;
+        tab.AccessibleName = name + " 탭, 노선 " + count + "개" + (selected ? ", 선택됨" : "");
+        tab.BackColor = selected ? TicketStyle.Face : TicketStyle.Forest;
+        tab.ForeColor = selected ? TicketStyle.Forest : Color.White;
+        tab.Font = new Font("맑은 고딕", 10f, selected ? FontStyle.Bold : FontStyle.Regular);
+        tab.FlatAppearance.BorderColor = selected ? TicketStyle.Face : Color.FromArgb(91, 127, 105);
+    }
+
     void RefreshList()
     {
         UpdateCheckAvailability();
-        if (!settings.Watches.Contains(selectedWatch)) selectedWatch = settings.Watches.FirstOrDefault();
+        UpdateTabs();
+        var visible = VisibleWatches();
+        if (!visible.Contains(selectedWatch)) selectedWatch = visible.FirstOrDefault();
         deck.SuspendLayout();
         foreach (var card in deck.Controls.OfType<TicketCard>().ToArray())
-            if (!settings.Watches.Contains(card.Watch)) card.Dispose();
-        foreach (var watch in settings.Watches)
+            if (!visible.Contains(card.Watch)) card.Dispose();
+        foreach (var watch in visible)
         {
             var card = deck.Controls.OfType<TicketCard>().FirstOrDefault(t => t.Watch == watch);
             if (card == null)
@@ -360,13 +410,13 @@ public partial class MainForm
                 card.Click += (s, e) => SelectTicket((TicketCard)s);
                 card.DoubleClick += (s, e) =>
                 {
-                    if (!webReady || busy || DomesticSearch.Read(((TicketCard)s).Watch.Url, true) == null) return;
+                    if (!webReady || busy || FlightSearch.Read(((TicketCard)s).Watch.Url, true) == null) return;
                     SelectTicket((TicketCard)s);
-                    web.CoreWebView2.Navigate(selectedWatch.Url);
+                    web.CoreWebView2.Navigate(FlightSearch.PageOf(selectedWatch.Url));
                     ShowView(web);
                 };
                 deck.Controls.Add(card);
-                deck.Controls.SetChildIndex(card, Math.Min(settings.Watches.IndexOf(watch), deck.Controls.Count - 1));
+                deck.Controls.SetChildIndex(card, Math.Min(visible.IndexOf(watch), deck.Controls.Count - 1));
             }
             card.UpdateState(watch == selectedWatch, settings.Running);
         }
@@ -426,18 +476,21 @@ public partial class MainForm
     // 기존 settings.json에 저장된 문자열의 항공사·등급을 함께 표시해 공백이 들어간 이름도 유지한다.
     static string[] FareColumns(string seat)
     {
-        var parts = Regex.Match(seat ?? "", @"^(\d{2}:\d{2})→(\d{2}:\d{2})\s+(.+)\s+(\d[\d.,\s]*원)$");
-        return parts.Success ? new[] { parts.Groups[3].Value, parts.Groups[1].Value, parts.Groups[2].Value, parts.Groups[4].Value }
+        // 국제선 도착 시각에는 날짜가 바뀐 만큼 +1 이 붙는다(09:30+1 → 09:30 (+1일)).
+        var parts = Regex.Match(seat ?? "", @"^(\d{2}:\d{2})→(\d{2}:\d{2})(?:\+(\d))?\s+(.+)\s+(\d[\d.,\s]*원)$");
+        return parts.Success ? new[] { parts.Groups[4].Value, parts.Groups[1].Value,
+                parts.Groups[2].Value + (parts.Groups[3].Success ? " (+" + parts.Groups[3].Value + "일)" : ""), parts.Groups[5].Value }
             : new[] { seat ?? "", "", "", "" };
     }
 
     // 저장된 운임은 "항공사 좌석등급" 형식이다. 이름 중간의 공백은 허용하고 단어 경계에서만 일치시킨다.
+    // 국제선의 "아시아나항공, 일본항공 직항"은 쉼표를 빼고 첫 항공사로 찾는다.
     static string AirlineSite(string label)
     {
         string name = "";
         foreach (string word in label.Split((char[])null, StringSplitOptions.RemoveEmptyEntries))
         {
-            name += word;
+            name += word.TrimEnd(',');
             var airline = Airline.FindByName(name);
             if (airline != null) return airline.Site;
         }
@@ -461,9 +514,10 @@ public partial class MainForm
     {
         var w = selectedWatch;
         editRoute.Enabled = removeRoute.Enabled = w != null;
-        openRoute.Enabled = copyRoute.Enabled = w != null && DomesticSearch.Read(w.Url, true) != null;
+        openRoute.Enabled = copyRoute.Enabled = w != null && FlightSearch.Read(w.Url, true) != null;
         watchToggle.Enabled = w != null && w.InactiveReason == null;
         fares.Rows.Clear();
+        fares.Columns[0].HeaderText = w != null && FlightSearch.IsInternational(w.Url) ? "항공사 · 직항/경유" : "항공사 · 좌석 등급";
         if (w == null)
         {
             heading.Text = "항공편 운임";
@@ -478,7 +532,8 @@ public partial class MainForm
             var status = w.DisplayStatus(settings.Running);
             bool uncertain = status.StartsWith("확인 못 함");
             detailStatus.Text = status + (string.IsNullOrEmpty(w.LastCheck) ? "" : "   ·   마지막 조회 시도 " + w.LastCheck +
-                (string.IsNullOrEmpty(w.LastDuration) ? "" : " (" + w.LastDuration + " 걸림)"));
+                (string.IsNullOrEmpty(w.LastDuration) ? "" : " (" + w.LastDuration + " 걸림)")) +
+                (w.HiddenSchedules > 0 && w.Unconfirmed == null ? "   ·   접힌 동일가 일정 " + w.HiddenSchedules + "편 미확인" : "");
             detailStatus.Text += "\n마지막 정상 확인 " + (string.IsNullOrEmpty(w.LastSuccess) ? "기록 없음" : w.LastSuccess) +
                 (w.FailureStreak > 0 ? " · 연속 전체 확인 실패 " + w.FailureStreak + "회" : "");
             ButtonTips.SetToolTip(detailStatus, detailStatus.Text);
@@ -511,14 +566,14 @@ public partial class MainForm
     void OpenSelectedRoute()
     {
         if (selectedWatch == null) return;
-        OpenHttps(selectedWatch.Url);
+        OpenHttps(FlightSearch.PageOf(selectedWatch.Url));
     }
 
     void CopySelected()
     {
         var source = selectedWatch;
         if (source == null) return;
-        var search = DomesticSearch.Read(source.Url, true);
+        var search = FlightSearch.Read(source.Url, true);
         if (search == null) return;
         using (var dialog = Dialog("다른 날짜로 노선 복제", 195))
         {
@@ -551,22 +606,48 @@ public partial class MainForm
             BackColor = TicketStyle.Paper, ClientSize = new Size(520, height), Padding = new Padding(18) };
     }
 
-    static ComboBox AirportBox(string name, string selected)
+    // 국내선은 목록에서만 고른다. 국제선은 목록에 없는 공항도 세 글자 코드로 직접 입력할 수 있다.
+    static ComboBox AirportBox(string name, string selected, bool international)
     {
-        var box = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, AccessibleName = name,
-            DisplayMember = "Value", ValueMember = "Key" };
-        box.DataSource = TicketRoute.Cities.OrderBy(p => p.Value, StringComparer.Create(
+        var box = new ComboBox { DropDownStyle = international ? ComboBoxStyle.DropDown : ComboBoxStyle.DropDownList,
+            Dock = DockStyle.Fill, AccessibleName = name, DisplayMember = "Value", ValueMember = "Key" };
+        box.DataSource = (international ? TicketRoute.Airports : TicketRoute.Cities).OrderBy(p => p.Value, StringComparer.Create(
             System.Globalization.CultureInfo.GetCultureInfo("ko-KR"), false))
             .Select(p => new System.Collections.Generic.KeyValuePair<string, string>(p.Key, p.Value + " (" + p.Key + ")")).ToArray();
         box.BindingContext = new BindingContext();
-        box.SelectedValue = selected;
+        if (international)
+        {
+            box.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
+            box.AutoCompleteSource = AutoCompleteSource.ListItems;
+            if (TicketRoute.Airports.ContainsKey(selected)) box.SelectedValue = selected;
+            else { box.SelectedIndex = -1; box.Text = selected; }
+        }
+        else box.SelectedValue = selected;
         return box;
+    }
+
+    // "도쿄 나리타 (NRT)", "nrt", "방콕"처럼 입력한 글자에서 공항 코드를 꺼낸다. 못 찾으면 입력 그대로(검사는 FlightSearch).
+    internal static string AirportCode(string text)
+    {
+        text = (text ?? "").Trim();
+        var m = Regex.Match(text, @"\(([A-Za-z]{3})\)\s*$");
+        if (!m.Success) m = Regex.Match(text, @"^([A-Za-z]{3})$");
+        if (m.Success) return m.Groups[1].Value.ToUpperInvariant();
+        var named = TicketRoute.Airports.FirstOrDefault(p => p.Value == text);
+        return named.Key ?? text;
     }
 
     static Button AirportSwapButton(ComboBox from, ComboBox to)
     {
         var swap = IconButton(Glyph.Swap, "출발지와 도착지 교환", TicketStyle.Face, TicketStyle.Forest, (s, e) =>
         {
+            if (from.DropDownStyle == ComboBoxStyle.DropDown)
+            {
+                var text = from.Text;
+                from.Text = to.Text;
+                to.Text = text;
+                return;
+            }
             var departure = from.SelectedValue;
             from.SelectedValue = to.SelectedValue;
             to.SelectedValue = departure;
@@ -577,9 +658,10 @@ public partial class MainForm
         return swap;
     }
 
-    static Button AirlinePicker(ContextMenuStrip menu, HashSet<string> selected)
+    static Button AirlinePicker(ContextMenuStrip menu, HashSet<string> selected, bool international)
     {
-        var names = Airline.Domestic.ToDictionary(a => a.Code, a => a.Name, StringComparer.OrdinalIgnoreCase);
+        var names = (international ? Airline.Domestic.Concat(Airline.Foreign) : Airline.Domestic)
+            .ToDictionary(a => a.Code, a => a.Name, StringComparer.OrdinalIgnoreCase);
         foreach (var code in selected)
             if (!names.ContainsKey(code)) names.Add(code, code);
         var button = ActionButton("", TicketStyle.Face, TicketStyle.Forest, (s, e) =>
@@ -620,8 +702,11 @@ public partial class MainForm
 
     void ShowWatchDialog(Watch previous)
     {
-        var saved = previous == null ? null : DomesticSearch.Read(previous.Url);
-        using (var dialog = Dialog(previous == null ? "감시 노선 추가" : "감시 조건 수정", 540))
+        var saved = previous == null ? null : FlightSearch.Read(previous.Url);
+        // 새 노선은 지금 보고 있는 탭의 종류로, 수정은 저장된 주소의 종류로 연다. 주소 붙여넣기는 두 종류 모두 받는다.
+        bool international = previous != null ? FlightSearch.IsInternational(previous.Url) : settings.InternationalTab;
+        string kind = international ? "국제선" : "국내선";
+        using (var dialog = Dialog(previous == null ? kind + " 감시 노선 추가" : kind + " 감시 조건 수정", 540))
         using (var airlineMenu = new ContextMenuStrip())
         {
             var tabs = new TabControl { Dock = DockStyle.Fill };
@@ -631,8 +716,10 @@ public partial class MainForm
             if (canEditFields) tabs.TabPages.Add(conditions);
             var raw = new TabPage("주소 붙여넣기") { BackColor = TicketStyle.Face, Padding = new Padding(14) };
             tabs.TabPages.Add(raw);
-            var from = AirportBox("출발지", saved == null ? "CJU" : saved.From);
-            var to = AirportBox("도착지", saved == null ? "GMP" : saved.To);
+            var from = AirportBox("출발지", saved == null ? (international ? "ICN" : "CJU") : saved.From, international);
+            var to = AirportBox("도착지", saved == null ? (international ? "NRT" : "GMP") : saved.To, international);
+            var direct = new CheckBox { Text = "직항만", AutoSize = true, Anchor = AnchorStyles.Left,
+                Checked = saved != null && saved.Direct, Margin = new Padding(3, 4, 0, 0) };
             var date = new DateTimePicker { AccessibleName = "출발 날짜", Format = DateTimePickerFormat.Custom,
                 CustomFormat = "yyyy년 MM월 dd일", Dock = DockStyle.Fill };
             date.Value = saved == null ? DateTime.Today : saved.Date;
@@ -650,27 +737,28 @@ public partial class MainForm
             fields.Controls.Add(to, 2, 1);
             fields.Controls.Add(FieldLabel("출발 날짜"), 0, 2);
             fields.Controls.Add(date, 0, 3);
+            if (international) fields.Controls.Add(direct, 2, 3);
             var timeLabel = FieldLabel("출발 시간대 · 복수 선택 가능, 선택하지 않으면 하루 전체");
             fields.Controls.Add(timeLabel, 0, 4);
             fields.SetColumnSpan(timeLabel, 3);
             var times = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3 };
             for (int i = 0; i < 3; i++) times.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3));
-            for (int i = 0; i < DomesticSearch.TimeSlots.Length; i++)
+            for (int i = 0; i < FlightSearch.TimeSlots.Length; i++)
             {
-                string slot = DomesticSearch.TimeSlots[i];
+                string slot = FlightSearch.TimeSlots[i];
                 times.Controls.Add(new CheckBox { Text = slot.Replace("-", " – "), Tag = slot, AutoSize = true,
                     Checked = saved != null && saved.Times.Contains(slot), Margin = new Padding(3, 6, 2, 4) }, i % 3, i / 3);
             }
             fields.Controls.Add(times, 0, 5);
             fields.SetColumnSpan(times, 3);
             fields.Controls.Add(FieldLabel("항공사 · 복수 선택 가능"), 0, 6);
-            var airlineButton = AirlinePicker(airlineMenu, airlineCodes);
+            var airlineButton = AirlinePicker(airlineMenu, airlineCodes, international);
             fields.Controls.Add(airlineButton, 0, 7);
             fields.SetColumnSpan(airlineButton, 3);
             conditions.Controls.Add(fields);
             if (!canEditFields) conditions.Dispose();
 
-            var title = Caption("네이버 항공권 국내선 편도 검색 주소", 12, TicketStyle.Forest, true);
+            var title = Caption("네이버 항공권 국내선·국제선 편도 검색 주소", 12, TicketStyle.Forest, true);
             title.Dock = DockStyle.Top;
             title.Height = 35;
             var address = new TextBox { Dock = DockStyle.Top, AccessibleName = title.Text, Text = previous == null ? "" : previous.Url };
@@ -685,7 +773,8 @@ public partial class MainForm
             var maxPrice = new NumericUpDown { Minimum = 1000, Maximum = 10000000, Increment = 10000, ThousandsSeparator = true,
                 Width = 110, TextAlign = HorizontalAlignment.Right, AccessibleName = "최대 금액(원)", Enabled = hadLimit,
                 Value = hadLimit ? Math.Min(10000000, Math.Max(1000, previous.MaxPrice)) : 100000 };
-            var priceHint = new Label { Text = "원 이하 좌석만 표시하고 알림 · 성인 1명 편도 운임", AutoSize = true,
+            var priceHint = new Label { Text = international ? "원 이하 좌석만 표시하고 알림 · 카드 할인 전 운임"
+                : "원 이하 좌석만 표시하고 알림 · 성인 1명 편도 운임", AutoSize = true,
                 ForeColor = TicketStyle.Muted, Margin = new Padding(3, 5, 0, 0) };
             limitPrice.CheckedChanged += (s, e) => { maxPrice.Enabled = limitPrice.Checked; if (limitPrice.Checked) maxPrice.Focus(); };
             priceRow.Controls.Add(limitPrice);
@@ -703,8 +792,11 @@ public partial class MainForm
                 {
                     try
                     {
-                        url = DomesticSearch.Build((string)from.SelectedValue, (string)to.SelectedValue, date.Value,
-                            times.Controls.OfType<CheckBox>().Where(c => c.Checked).Select(c => (string)c.Tag), saved, airlineCodes);
+                        var slots = times.Controls.OfType<CheckBox>().Where(c => c.Checked).Select(c => (string)c.Tag);
+                        url = international
+                            ? FlightSearch.BuildInternational(AirportCode(from.Text), AirportCode(to.Text), date.Value, slots,
+                                direct.Checked, saved, airlineCodes)
+                            : FlightSearch.Build((string)from.SelectedValue, (string)to.SelectedValue, date.Value, slots, saved, airlineCodes);
                     }
                     catch (ArgumentException ex) { MessageBox.Show(dialog, ex.Message, dialog.Text); return; }
                 }

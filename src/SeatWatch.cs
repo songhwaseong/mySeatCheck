@@ -7,6 +7,9 @@
 //   - 새로고침하면 사이트 시간대 거르기가 빠지고, 그 목록은 내려도 11시대에서 멈춘다
 //     → 매번 주소로 새로 열고, 거르기가 빠졌으면 최대 3번 다시 연다. 그래도 빠지면 '없음'으로 치지 않는다.
 //   - 목록을 하나도 못 읽은 회차도 '없음'으로 치지 않는다(로딩 실패로 알림이 잘못 울림).
+// 국제선(2026-11-20 실측):
+//   - 사이트 주소에 출발 시간대·항공사 조건이 없다 → 감시 주소에만 적어 두고(FlightSearch.PageUrl 로 빼고 연다) 앱이 거른다.
+//   - 목록은 한 번에 모두 뜨고 스크롤해도 늘지 않는다. '동일가 다른 일정'으로 접힌 편은 읽지 못한다.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -47,6 +50,7 @@ public class Watch
     internal const string Partial = "일부 확인";
     public long MaxPrice; // 0 = 금액 제한 없음. 네이버 주소에는 금액 조건이 없어서 앱이 직접 거른다.
     internal int OverPrice; // 마지막 조회에서 최대 금액을 넘어 뺀 좌석 수
+    internal int HiddenSchedules; // 국제선 마지막 조회에서 '동일가 다른 일정'으로 접혀 읽지 못한 편 수
 
     // 실행을 다시 시작하면 저장된 좌석은 알림 비교용으로만 남는다.
     internal const string Waiting = "조회 대기";
@@ -117,7 +121,7 @@ public class Watch
 
     internal void EvaluateRoute(DateTime today)
     {
-        var route = DomesticSearch.Read(Url, true);
+        var route = FlightSearch.Read(Url, true);
         InactiveReason = route == null ? "지원하지 않는 검색 주소" : route.Date < today.Date ? "감시 종료 · 출발일 지남" : null;
         if (InactiveReason == null) return;
         PendingNtfy.Clear();
@@ -140,6 +144,7 @@ public class Settings
     // 체크를 풀면 적어 둔 값은 그대로 두고 보내지만 않는다. 예전 설정 파일에는 없으므로 켜짐으로 읽힌다.
     public bool NtfyOn = true, TelegramOn = true;
     public bool Running = true; // 전체 시작·멈춤(다음 실행 때도 이어짐)
+    public bool InternationalTab; // 마지막으로 본 탑승권 탭(국내선·국제선). 보기만 나누며 감시는 둘 다 계속한다.
     public List<Watch> Watches = new List<Watch>();
 
     internal bool UsesNtfy() { return NtfyOn && !string.IsNullOrEmpty(NtfyTopic); }
@@ -158,8 +163,11 @@ public class Settings
 public class Card
 {
     public string Airline, AirlineCode, Dep, Arr, Cls;
+    public string[] AirlineCodes; // 국제선은 여러 항공사 일정이 한 줄에 나온다(로고 순서)
+    public bool International;
     public long Price;
-    public string Key { get { return Dep + " " + Airline + " " + Cls; } }
+    // 국제선은 출발 시각·항공사·직항/경유가 같아도 경유 일정이 다를 수 있어 도착 시각(+1일 포함)까지 넣는다.
+    public string Key { get { return Dep + " " + Airline + " " + Cls + (International ? " →" + Arr : ""); } }
     internal string FareText { get { return Airline + " " + Dep + "→" + Arr + " " + Cls + " " + Price.ToString("N0") + "원"; } }
 }
 
@@ -312,10 +320,10 @@ public partial class MainForm : Form
     bool SaveWatch(Form dialog, string address, Watch previous, long maxPrice, bool notifyFirst)
     {
         var url = address.Trim();
-        var search = DomesticSearch.Read(url, true);
+        var search = FlightSearch.Read(url, true);
         if (search == null || search.Date < DateTime.Today)
         {
-            MessageBox.Show(dialog, search == null ? "감시할 수 있는 주소는 네이버 항공권 국내선 편도 검색 결과입니다. 노선·날짜·출발 시간대를 확인해 주세요." :
+            MessageBox.Show(dialog, search == null ? "감시할 수 있는 주소는 네이버 항공권 국내선·국제선 편도 검색 결과입니다. 노선·날짜·출발 시간대를 확인해 주세요." :
                 "출발일이 지났습니다. 오늘 이후의 날짜를 선택해 주세요.", "좌석 감시");
             return false;
         }
@@ -338,6 +346,7 @@ public partial class MainForm : Form
         if (!SaveSettings(proposed)) return false;
         settings.Watches = proposed.Watches;
         selectedWatch = replacement;
+        settings.InternationalTab = search.International;
         if (previous != null && previous == activeWatch) activeCheck.Cancel();
         RefreshList();
         Log((previous == null ? "감시 추가: " : "감시 조건 변경: ") + LabelOf(url) + " · " + RangeLabel(url) +
@@ -360,14 +369,14 @@ public partial class MainForm : Form
     // ───────────── 주소 풀이 ─────────────
     static string LabelOf(string url)
     {
-        var m = Regex.Match(Uri.UnescapeDataString(url), @"/([A-Z]{3}):(?:airport|city)-([A-Z]{3}):(?:airport|city)-(\d{4})(\d{2})(\d{2})");
+        var m = Regex.Match(Uri.UnescapeDataString(url), @"/([A-Z]{3})(?::(?:airport|city))?-([A-Z]{3})(?::(?:airport|city))?-(\d{4})(\d{2})(\d{2})");
         if (!m.Success) return url;
         return m.Groups[1].Value + "→" + m.Groups[2].Value + " " + int.Parse(m.Groups[4].Value) + "/" + int.Parse(m.Groups[5].Value);
     }
 
     static List<string[]> RangesOf(string url)
     {
-        var search = DomesticSearch.Read(url, true);
+        var search = FlightSearch.Read(url, true);
         var raw = search != null ? string.Join(",", search.Times) : "";
         var result = new List<string[]>();
         foreach (var part in raw.Split(','))
@@ -390,9 +399,13 @@ public partial class MainForm : Form
         return ranges.Any(r => string.CompareOrdinal(t, r[0]) >= 0 && string.CompareOrdinal(t, r[1]) <= 0);
     }
 
-    static bool MatchesWatch(Card card, List<string[]> ranges, HashSet<string> airlines)
+    // 국제선의 여러 항공사 일정은 고른 항공사가 하나라도 들어 있으면 맞는 것으로 친다.
+    internal static bool MatchesWatch(Card card, List<string[]> ranges, HashSet<string> airlines)
     {
-        return InRange(card.Dep, ranges) && (airlines.Count == 0 || airlines.Contains(Airline.CodeFor(card.Airline, card.AirlineCode)));
+        if (!InRange(card.Dep, ranges)) return false;
+        if (airlines.Count == 0) return true;
+        if (card.AirlineCodes != null && card.AirlineCodes.Any(airlines.Contains)) return true;
+        return airlines.Contains(Airline.CodeFor(card.Airline, card.AirlineCode));
     }
 
     // ───────────── 조회 ─────────────
@@ -516,6 +529,7 @@ public partial class MainForm : Form
     {
         public Dictionary<string, Card> All = new Dictionary<string, Card>();
         public bool None, Filtered, Complete, PageBoundary;
+        public int HiddenSchedules;
         public string BodyHead = "";
     }
 
@@ -530,13 +544,15 @@ public partial class MainForm : Form
             token.ThrowIfCancellationRequested();
         }
         var ranges = RangesOf(w.Url);
-        var airlines = new HashSet<string>(DomesticSearch.AirlinesOf(w.Url), StringComparer.OrdinalIgnoreCase);
+        var airlines = new HashSet<string>(FlightSearch.AirlinesOf(w.Url), StringComparer.OrdinalIgnoreCase);
         var label = LabelOf(w.Url);
+        var search = FlightSearch.Read(w.Url, true);
+        bool international = search != null && search.International;
         ScanResult r = null;
         for (int attempt = 1; attempt <= 3; attempt++)
         {
             timing.Attempts = attempt;
-            r = await CollectOnce(w.Url, ranges, airlines, token, timing);
+            r = await CollectOnce(FlightSearch.PageOf(w.Url), international, ranges, airlines, token, timing);
             token.ThrowIfCancellationRequested();
             if (r.None || r.All.Count == 0 || r.Filtered || attempt == 3) break;
             Log(label + " · 사이트 검색 조건이 결과와 다름 → 다시 열기 " + (attempt + 1) + "/3");
@@ -553,6 +569,7 @@ public partial class MainForm : Form
             w.Unconfirmed = null;
             w.Seats.Clear();
             w.OverPrice = 0;
+            w.HiddenSchedules = 0;
             w.Observe(new List<Card>(), true, settings);
             Log(label + " · " + RangeLabel(w.Url) + " 출발 좌석 없음" + took);
             return;
@@ -576,11 +593,13 @@ public partial class MainForm : Form
         var hits = matching.Where(c => w.Allows(c.Price))
             .OrderBy(c => c.Dep, StringComparer.Ordinal).ThenBy(c => c.Price).ToList();
         w.OverPrice = matching.Count - hits.Count;
+        w.HiddenSchedules = r.HiddenSchedules;
         var newOnes = w.Observe(hits, r.Complete, settings);
         w.Seats = hits.Select(c => c.Dep + "→" + c.Arr + " " + c.Airline + " " + c.Cls + " " + c.Price.ToString("N0") + "원").ToList();
         w.Unconfirmed = r.Complete ? null : Watch.Partial;
         Log(label + " · " + RangeLabel(w.Url) + (r.Complete ? " 출발 " : " 출발 · 일부 확인 ") + (hits.Count > 0 ? hits.Count + "개 좌석" + took + "\r\n    " + string.Join("\r\n    ", w.Seats) : "확인된 좌석 0개" + took) +
-            (w.OverPrice > 0 ? "\r\n    (" + Watch.PriceLabel(w.MaxPrice) + " 조건으로 " + w.OverPrice + "개 제외)" : ""));
+            (w.OverPrice > 0 ? "\r\n    (" + Watch.PriceLabel(w.MaxPrice) + " 조건으로 " + w.OverPrice + "개 제외)" : "") +
+            (r.HiddenSchedules > 0 ? "\r\n    ('동일가 다른 일정'으로 접힌 " + r.HiddenSchedules + "편은 확인하지 않음)" : ""));
 
         if (newOnes.Count > 0)
         {
@@ -597,8 +616,10 @@ public partial class MainForm : Form
 
     // 정체나 시도 횟수 제한은 조회를 끝내는 조건일 뿐, 목록 완료의 근거가 아니다.
     // 단계별 시간(이동·첫 카드 대기·스크롤)은 시간 초과나 오류로 끝나도 그때까지 쓴 만큼 더한다.
-    async Task<ScanResult> CollectOnce(string url, List<string[]> ranges, HashSet<string> airlines, CancellationToken token,
-        CheckTiming timing)
+    // url 은 WebView2 로 여는 네이버 주소(국제선은 앱 전용 조건을 뺀 주소). 국제선은 사이트가 거르지 않으므로
+    // 거르기 확인(Filtered)을 하지 않고, 목록이 한 번에 뜨므로 스크롤하지 않는다.
+    async Task<ScanResult> CollectOnce(string url, bool international, List<string[]> ranges, HashSet<string> airlines,
+        CancellationToken token, CheckTiming timing)
     {
         var r = new ScanResult();
         var stage = Stopwatch.StartNew();
@@ -618,8 +639,8 @@ public partial class MainForm : Form
         finally { timing.WaitMs += stage.ElapsedMilliseconds; }
         if (r.None || r.All.Count == 0) return r;
 
-        r.Filtered = r.All.Values.All(c => MatchesWatch(c, ranges, airlines));
-        if (!r.Filtered || r.Complete) return r;
+        r.Filtered = international || r.All.Values.All(c => MatchesWatch(c, ranges, airlines));
+        if (!r.Filtered || r.Complete || international) return r;
 
         int still = 0;
         stage.Restart();
@@ -654,6 +675,7 @@ public partial class MainForm : Form
         r.PageBoundary = Equals(obj["pageBoundary"], true);
         if (obj.ContainsKey("none") && obj["none"] is bool && (bool)obj["none"]) r.None = true;
         if (obj.ContainsKey("bodyHead")) r.BodyHead = Convert.ToString(obj["bodyHead"]);
+        r.HiddenSchedules = obj.ContainsKey("hiddenSchedules") ? Convert.ToInt32(obj["hiddenSchedules"]) : 0;
         var cards = obj.ContainsKey("cards") ? obj["cards"] as object[] : null;
         if (cards == null) return;
         // 확정 목록은 같은 화면에서 읽은 행만 사용한다. 앞선 로딩 단계의 행은 버린다.
@@ -669,7 +691,10 @@ public partial class MainForm : Form
                 Dep = Convert.ToString(d["dep"]),
                 Arr = Convert.ToString(d["arr"]),
                 Cls = Convert.ToString(d["cls"]),
-                Price = Convert.ToInt64(d["price"])
+                Price = Convert.ToInt64(d["price"]),
+                International = d.ContainsKey("intl") && Equals(d["intl"], true),
+                AirlineCodes = d.ContainsKey("airlineCodes") && d["airlineCodes"] is object[]
+                    ? ((object[])d["airlineCodes"]).Select(Convert.ToString).ToArray() : null
             };
             Card old;
             if (!r.All.TryGetValue(c.Key, out old) || old.Price > c.Price) r.All[c.Key] = c;
@@ -822,7 +847,8 @@ public partial class MainForm : Form
         var seats = hits.Where(c => pending.ContainsKey(c.Key)).ToList();
         if (seats.Count == 0) return;
         var channel = telegram ? "텔레그램" : "ntfy";
-        var problem = await SendMobile(telegram, settings, "좌석이 생겼어요!", FareMessage(LabelOf(w.Url), seats), w.Url, Airline.WithSites(seats));
+        var problem = await SendMobile(telegram, settings, "좌석이 생겼어요!", FareMessage(LabelOf(w.Url), seats),
+            FlightSearch.PageOf(w.Url), Airline.WithSites(seats));
         if (exiting || !settings.Watches.Contains(w) || pending != (telegram ? w.PendingTelegram : w.PendingNtfy)) return;
         bool exhausted = Watch.FinishDelivery(pending, seats, problem == null);
         Log(problem == null ? channel + " 알림 전송 완료" : "휴대폰 알림 실패 · " + problem +
