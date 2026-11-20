@@ -37,12 +37,18 @@ internal sealed class TicketRoute
         {"YVR","밴쿠버"}, {"SYD","시드니"}, {"CDG","파리"}, {"LHR","런던"}, {"FRA","프랑크푸르트"}, {"FCO","로마"},
         {"BCN","바르셀로나"}, {"IST","이스탄불"}, {"DXB","두바이"}
     };
+    // 국제선 도시 검색(공항 코드와 겹치지 않는 도시 코드만). 2026-11-20 네이버에서 모든 공항이 함께 나오는 것을 확인했다.
+    internal static readonly Dictionary<string, string> CityGroups = new Dictionary<string, string> {
+        {"SEL","서울 전체"}, {"TYO","도쿄 전체"}, {"OSA","오사카 전체"}, {"SPK","삿포로 전체"},
+        {"BJS","베이징 전체"}, {"NYC","뉴욕 전체"}
+    };
     internal readonly string CitiesLabel, Codes, DateLabel, TimeLabel;
 
     internal static string PlaceName(string code)
     {
         string name;
-        return Cities.TryGetValue(code, out name) || Airports.TryGetValue(code, out name) ? name : code;
+        return Cities.TryGetValue(code, out name) || Airports.TryGetValue(code, out name) ||
+            CityGroups.TryGetValue(code, out name) ? name : code;
     }
 
     internal TicketRoute(string url, string time)

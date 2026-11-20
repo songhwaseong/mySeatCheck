@@ -42,8 +42,11 @@ var SeatScan = (function () {
   //   경유 1, 14시간 40분 / 동일가 다른 일정2 / 성인/KB국민카드 / 473,200원~ / 1만원 할인 / 편도 / 463,200 / 원~
   //   - '편도' 아래 큰 가격은 그 카드사 할인가다. 할인 전 가격(473,200원~)이 있으면 그 값을 쓴다(국내선과 같은 기준).
   //   - 시각 바로 위 줄은 항공사가 아닐 수 있다(이벤트혜택, ○○ 공동운항).
-  var TIME_LINE = /^(\d{2}:\d{2})[A-Z]{3}$/;
+  //   - 시각 줄 끝의 공항 코드는 도시 검색(TYO 등)에서 편마다 다르다(NRT·HND).
+  //   - '직항, 02시간 15분' / '경유 1, 34시간 20분' 줄에서 경유 횟수와 총 소요시간을 읽는다.
+  var TIME_LINE = /^(\d{2}:\d{2})([A-Z]{3})$/;
   var NOT_AIRLINE = /^(이벤트혜택|CO2\b.*|.*공동운항)$/;
+  var STOP_LINE = /^(직항|경유\s*(\d+))(?:,\s*(?:(\d+)\s*시간)?\s*(?:(\d+)\s*분)?.*)?$/;
 
   function parseInternationalRow(text) {
     var lines = String(text || '').split('\n').map(function (l) { return l.trim(); })
@@ -55,10 +58,14 @@ var SeatScan = (function () {
       for (var a = i - 1; a >= 0; a--) if (!NOT_AIRLINE.test(lines[a])) { airline = lines[a]; break; }
       var rest = lines.slice(i + 2);
       var days = rest.length && rest[0].match(/^\+(\d)일$/);
-      var cls = null;
+      var cls = null, stops = -1, minutes = 0;
       for (var s = 0; s < rest.length && s < 3; s++) {
-        var stop = rest[s].match(/^(직항|경유\s*\d+)(?:,|$)/);
-        if (stop) { cls = stop[1].replace(/\s+/g, ' ').replace(/경유(\d)/, '경유 $1'); break; }
+        var stop = rest[s].match(STOP_LINE);
+        if (!stop) continue;
+        cls = stop[2] ? '경유 ' + Number(stop[2]) : '직항';
+        stops = stop[2] ? Number(stop[2]) : 0;
+        minutes = Number(stop[3] || 0) * 60 + Number(stop[4] || 0);
+        break;
       }
       var joined = rest.join('\n');
       var shown = joined.match(/(?:^|\n)편도\n([\d,]+)\n?원/);
@@ -66,10 +73,17 @@ var SeatScan = (function () {
       var before = joined.match(/(?:^|\n)([\d,]+)원~?\n[^\n]*할인\n편도\n/);
       return {
         airline: airline, dep: dep[1], arr: arr[1] + (days ? '+' + days[1] : ''), cls: cls,
-        price: Number((before ? before[1] : shown[1]).replace(/,/g, '')), intl: true
+        price: Number((before ? before[1] : shown[1]).replace(/,/g, '')), intl: true,
+        from: dep[2], to: arr[2], stops: stops, minutes: minutes
       };
     }
     return null;
+  }
+
+  // 주소의 출발·도착 코드(도시 코드일 수 있음)
+  function routeCodes(href) {
+    var m = String(href || '').match(/\/flights\/international\/([A-Z]{3})(?::\w+)?-([A-Z]{3})(?::\w+)?-\d{8}/);
+    return m ? { from: m[1], to: m[2] } : null;
   }
 
   function logoCodes(element) {
@@ -92,11 +106,13 @@ var SeatScan = (function () {
     var done = !!marker && /loading_done/.test(marker.className || '') &&
       !doc.querySelector('[aria-label="Loading..."][aria-busy="true"]');
     var rows = doc.querySelectorAll('button[data-event-area-code="isb.schedule1"]');
-    var cards = [];
+    var cards = [], route = routeCodes(doc.location.href);
     for (var i = 0; i < rows.length; i++) {
       var element = rows[i].parentElement;
       var card = parseInternationalRow(element.innerText);
       if (!card) continue;
+      // 도시 검색이면 편마다 공항이 달라서 좌석 구분(cls)에 실제 공항을 붙인다. 공항 검색은 그대로.
+      if (route && (card.from !== route.from || card.to !== route.to)) card.cls += ' · ' + card.from + '→' + card.to;
       var codes = logoCodes(element);
       if (codes.length) { card.airlineCode = codes[0]; card.airlineCodes = codes; }
       cards.push(card);

@@ -94,11 +94,26 @@ internal sealed class Airline
     }
 }
 
+// 국제선 감시 조건. 직항만(isDirect=true)과 카드 할인 빼기(cardBenefit=0)는 네이버 주소 조건이고,
+// 경유 N회까지(maxStops)와 소요시간(maxHours)은 사이트 주소에 없어 감시 주소에만 적고 앱이 거른다.
+internal sealed class TripOptions
+{
+    internal int MaxStops = -1; // -1 전체, 0 직항만, 1·2 경유 N회까지
+    internal int MaxHours;      // 0 이면 제한 없음
+    internal bool NoCardBenefit;
+
+    internal bool SameAs(TripOptions other)
+    {
+        return other != null && MaxStops == other.MaxStops && MaxHours == other.MaxHours && NoCardBenefit == other.NoCardBenefit;
+    }
+}
+
 // 네이버 항공권 편도 검색 주소. 국내선은 시간대·항공사를 사이트가 거르고(주소의 depTime0·airline),
 // 국제선은 사이트 주소에 그런 조건이 없어서 같은 이름의 파라미터를 감시 주소에만 적어 두고 앱이 직접 거른다.
-// 국제선 페이지를 열 때는 PageUrl 로 그 파라미터를 뺀다.
+// 국제선 페이지를 열 때는 PageUrl 로 그 파라미터(depTime0·airline·maxStops·maxHours)를 뺀다.
 internal sealed class FlightSearch
 {
+    static readonly string[] AppOnlyParameters = { "maxStops", "maxHours" };
     internal static readonly string[] TimeSlots = {
         "00:00-06:00", "06:00-09:00", "09:00-12:00", "12:00-15:00",
         "15:00-18:00", "18:00-21:00", "21:00-24:00"
@@ -109,10 +124,12 @@ internal sealed class FlightSearch
     internal readonly DateTime Date;
     internal readonly string[] Times, Airlines;
     internal readonly bool Direct; // 국제선 직항만(isDirect=true)
+    internal readonly TripOptions Trip = new TripOptions();
     readonly string original, fromType, toType, fragment;
     readonly string[] otherParameters;
 
-    FlightSearch(Uri uri, bool international, Match path, DateTime date, string[] times, string[] airlines, string[] other)
+    FlightSearch(Uri uri, bool international, Match path, DateTime date, string[] times, string[] airlines, string[] other,
+        int maxStops, int maxHours)
     {
         original = uri.OriginalString;
         International = international;
@@ -125,6 +142,9 @@ internal sealed class FlightSearch
         Airlines = airlines;
         otherParameters = other;
         Direct = international && other.Any(p => p == "isDirect=true");
+        Trip.MaxStops = Direct ? 0 : maxStops;
+        Trip.MaxHours = maxHours;
+        Trip.NoCardBenefit = international && other.Any(p => p == "cardBenefit=0");
         fragment = uri.Fragment;
     }
 
@@ -157,8 +177,53 @@ internal sealed class FlightSearch
             string.CompareOrdinal(t.Substring(0, 5), t.Substring(6)) >= 0)) return null;
         if (!allowCustomTimes && times.Except(TimeSlots).Any()) return null;
         var airlineParameters = AirlineParameters(uri.Query);
+        var appParameters = parameters.Where(p => AppOnlyParameters.Contains(Uri.UnescapeDataString(p.Split('=')[0]))).ToArray();
+        int maxStops = -1, maxHours = 0;
+        foreach (var p in appParameters)
+        {
+            int value;
+            var name = Uri.UnescapeDataString(p.Split('=')[0]);
+            if (!international || p.IndexOf('=') < 0 ||
+                !int.TryParse(p.Substring(p.IndexOf('=') + 1), NumberStyles.None, CultureInfo.InvariantCulture, out value))
+                return null;
+            if (name == "maxStops" && value >= 1 && value <= 2) maxStops = value;
+            else if (name == "maxHours" && value >= 1 && value <= 99) maxHours = value;
+            else return null;
+        }
         return new FlightSearch(uri, international, path, date, times, AirlineCodes(airlineParameters),
-            parameters.Where(p => !filters.Contains(p) && !airlineParameters.Contains(p)).ToArray());
+            parameters.Where(p => !filters.Contains(p) && !airlineParameters.Contains(p) && !appParameters.Contains(p)).ToArray(),
+            maxStops, maxHours);
+    }
+
+    // 사이트가 거르지 않는 국제선 조건(경유 횟수·소요시간). 시간대·항공사는 MainForm.MatchesWatch 가 본다.
+    // 못 읽은 값(Stops·Minutes 가 음수나 0)은 거르지 않는다.
+    internal bool Allows(Card card)
+    {
+        if (!International) return true;
+        if (Trip.MaxStops >= 0 && card.Stops >= 0 && card.Stops > Trip.MaxStops) return false;
+        if (Trip.MaxHours > 0 && card.Minutes > 0 && card.Minutes > Trip.MaxHours * 60) return false;
+        return true;
+    }
+
+    // 탑승권과 기록에 덧붙이는 국제선 조건 요약. 국내선이나 조건이 없으면 빈 글자.
+    internal string ConditionLabel
+    {
+        get
+        {
+            if (!International) return "";
+            var parts = new List<string>();
+            if (Trip.MaxStops == 0) parts.Add("직항만");
+            else if (Trip.MaxStops > 0) parts.Add("경유 " + Trip.MaxStops + "회까지");
+            if (Trip.MaxHours > 0) parts.Add(Trip.MaxHours + "시간 이내");
+            if (Trip.NoCardBenefit) parts.Add("카드 할인 제외");
+            return string.Join(" · ", parts);
+        }
+    }
+
+    internal static string ConditionOf(string url)
+    {
+        var search = Read(url, true);
+        return search == null ? "" : search.ConditionLabel;
     }
 
     // WebView2 로 여는 네이버 주소. 국내선은 감시 주소 그대로, 국제선은 앱 전용 조건(depTime0·airline)을 뺀다.
@@ -221,21 +286,24 @@ internal sealed class FlightSearch
         if (!TicketRoute.Cities.ContainsKey(from) || !TicketRoute.Cities.ContainsKey(to))
             throw new ArgumentException("국내선 공항을 선택해 주세요.");
         if (previous != null && previous.International) previous = null;
-        return Compose(false, from, to, date, times, previous, airlines, false);
+        return Compose(false, from, to, date, times, previous, airlines, new TripOptions());
     }
 
-    internal static string BuildInternational(string from, string to, DateTime date, IEnumerable<string> times, bool direct,
+    // 도시 코드(TicketRoute.CityGroups 의 TYO 등)에는 ':city' 를 붙여 그 도시의 모든 공항을 검색한다.
+    internal static string BuildInternational(string from, string to, DateTime date, IEnumerable<string> times, TripOptions trip,
         FlightSearch previous, IEnumerable<string> airlines = null)
     {
         if (!IsAirportCode(from) || !IsAirportCode(to))
             throw new ArgumentException("공항은 영문 대문자 세 글자 코드(예: ICN, NRT)로 입력해 주세요.");
         if (from == to) throw new ArgumentException("출발지와 도착지를 다르게 선택해 주세요.");
+        if (trip.MaxStops < -1 || trip.MaxStops > 2 || trip.MaxHours < 0 || trip.MaxHours > 99)
+            throw new ArgumentException("경유 횟수와 소요시간을 다시 선택해 주세요.");
         if (previous != null && !previous.International) previous = null;
-        return Compose(true, from, to, date, times, previous, airlines, direct);
+        return Compose(true, from, to, date, times, previous, airlines, trip);
     }
 
     static string Compose(bool international, string from, string to, DateTime date, IEnumerable<string> times, FlightSearch previous,
-        IEnumerable<string> airlines, bool direct)
+        IEnumerable<string> airlines, TripOptions trip)
     {
         if (date.Date < DateTime.Today) throw new ArgumentException("오늘 이후의 출발 날짜를 선택해 주세요.");
         var selected = new HashSet<string>(times);
@@ -243,20 +311,25 @@ internal sealed class FlightSearch
             StringComparer.OrdinalIgnoreCase);
         if (!selected.IsSubsetOf(TimeSlots)) throw new ArgumentException("출발 시간대를 다시 선택해 주세요.");
         if (previous != null && previous.From == from && previous.To == to && previous.Date == date.Date &&
-            selected.SetEquals(previous.Times) && selectedAirlines.SetEquals(previous.Airlines) && previous.Direct == direct)
+            selected.SetEquals(previous.Times) && selectedAirlines.SetEquals(previous.Airlines) &&
+            (!international || previous.Trip.SameAs(trip)))
             return previous.original;
         var query = new List<string>(previous == null
             ? (international ? new[] { "adult=1", "fareType=Y" } : new[] { "adult=1", "fareType=YC" })
             : previous.otherParameters);
         if (international)
         {
-            query.RemoveAll(p => Uri.UnescapeDataString(p.Split('=')[0]) == "isDirect");
-            if (direct) query.Add("isDirect=true");
+            query.RemoveAll(p => Uri.UnescapeDataString(p.Split('=')[0]) == "isDirect" ||
+                Uri.UnescapeDataString(p.Split('=')[0]) == "cardBenefit");
+            if (trip.MaxStops == 0) query.Add("isDirect=true");
+            if (trip.NoCardBenefit) query.Add("cardBenefit=0");
         }
         if (selectedAirlines.Count > 0)
             query.Add("airline=" + string.Join(",", selectedAirlines.OrderBy(code => code, StringComparer.Ordinal).Select(Uri.EscapeDataString)));
         if (selected.Count > 0 && selected.Count < TimeSlots.Length)
             query.Add("depTime0=" + string.Join(",", TimeSlots.Where(selected.Contains)));
+        if (international && trip.MaxStops > 0) query.Add("maxStops=" + trip.MaxStops);
+        if (international && trip.MaxHours > 0) query.Add("maxHours=" + trip.MaxHours);
         string fromPart = from, toPart = to;
         if (!international)
         {
@@ -265,8 +338,10 @@ internal sealed class FlightSearch
         }
         else
         {
-            if (previous != null && previous.From == from && previous.fromType.Length > 0) fromPart += ":" + previous.fromType;
-            if (previous != null && previous.To == to && previous.toType.Length > 0) toPart += ":" + previous.toType;
+            if (TicketRoute.CityGroups.ContainsKey(from)) fromPart += ":city";
+            else if (previous != null && previous.From == from && previous.fromType.Length > 0) fromPart += ":" + previous.fromType;
+            if (TicketRoute.CityGroups.ContainsKey(to)) toPart += ":city";
+            else if (previous != null && previous.To == to && previous.toType.Length > 0) toPart += ":" + previous.toType;
         }
         return Host + (international ? "international/" : "domestic/") + fromPart + "-" + toPart + "-" +
             date.ToString("yyyyMMdd", CultureInfo.InvariantCulture) + (query.Count > 0 ? "?" + string.Join("&", query) : "") +

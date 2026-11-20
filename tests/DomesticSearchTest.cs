@@ -51,7 +51,7 @@ class DomesticSearchTest
         var ranges = new List<string[]> { new[] { "18:00", "21:00" } };
         var carriers = new HashSet<string>(new[] { "7C", "LJ" }, StringComparer.OrdinalIgnoreCase);
         Func<string, string, string, bool> match = (name, code, dep) => (bool)matches.Invoke(null,
-            new object[] { new Card { Airline = name, AirlineCode = code, Dep = dep }, ranges, carriers });
+            new object[] { new Card { Airline = name, AirlineCode = code, Dep = dep }, ranges, carriers, null });
         Assert(match("제주 항공", null, "18:05"));
         Assert(match("표시명 변경", "LJ", "18:05"));
         Assert(!match("진에어", "KE", "18:05"));

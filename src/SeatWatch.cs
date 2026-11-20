@@ -165,6 +165,8 @@ public class Card
     public string Airline, AirlineCode, Dep, Arr, Cls;
     public string[] AirlineCodes; // 국제선은 여러 항공사 일정이 한 줄에 나온다(로고 순서)
     public bool International;
+    public int Stops = -1;  // 국제선 경유 횟수(직항 0). 모르면 -1
+    public int Minutes;     // 국제선 총 소요시간(분). 모르면 0
     public long Price;
     // 국제선은 출발 시각·항공사·직항/경유가 같아도 경유 일정이 다를 수 있어 도착 시각(+1일 포함)까지 넣는다.
     public string Key { get { return Dep + " " + Airline + " " + Cls + (International ? " →" + Arr : ""); } }
@@ -350,6 +352,7 @@ public partial class MainForm : Form
         if (previous != null && previous == activeWatch) activeCheck.Cancel();
         RefreshList();
         Log((previous == null ? "감시 추가: " : "감시 조건 변경: ") + LabelOf(url) + " · " + RangeLabel(url) +
+            (search.ConditionLabel.Length > 0 ? " · " + search.ConditionLabel : "") +
             (maxPrice > 0 ? " · " + Watch.PriceLabel(maxPrice) : ""));
         nextRun = DateTime.Now;
         return true;
@@ -400,9 +403,11 @@ public partial class MainForm : Form
     }
 
     // 국제선의 여러 항공사 일정은 고른 항공사가 하나라도 들어 있으면 맞는 것으로 친다.
-    internal static bool MatchesWatch(Card card, List<string[]> ranges, HashSet<string> airlines)
+    // search 가 있으면 사이트가 거르지 않는 국제선 조건(경유 횟수·소요시간)도 본다.
+    internal static bool MatchesWatch(Card card, List<string[]> ranges, HashSet<string> airlines, FlightSearch search = null)
     {
         if (!InRange(card.Dep, ranges)) return false;
+        if (search != null && !search.Allows(card)) return false;
         if (airlines.Count == 0) return true;
         if (card.AirlineCodes != null && card.AirlineCodes.Any(airlines.Contains)) return true;
         return airlines.Contains(Airline.CodeFor(card.Airline, card.AirlineCode));
@@ -589,7 +594,7 @@ public partial class MainForm : Form
         }
 
         // 금액은 사이트 거르기 확인(r.Filtered)과 상관없이 여기서만 거른다. 가격이 내려 기준 안으로 들어온 좌석은 새 좌석으로 알린다.
-        var matching = r.All.Values.Where(c => MatchesWatch(c, ranges, airlines)).ToList();
+        var matching = r.All.Values.Where(c => MatchesWatch(c, ranges, airlines, search)).ToList();
         var hits = matching.Where(c => w.Allows(c.Price))
             .OrderBy(c => c.Dep, StringComparer.Ordinal).ThenBy(c => c.Price).ToList();
         w.OverPrice = matching.Count - hits.Count;
@@ -694,7 +699,9 @@ public partial class MainForm : Form
                 Price = Convert.ToInt64(d["price"]),
                 International = d.ContainsKey("intl") && Equals(d["intl"], true),
                 AirlineCodes = d.ContainsKey("airlineCodes") && d["airlineCodes"] is object[]
-                    ? ((object[])d["airlineCodes"]).Select(Convert.ToString).ToArray() : null
+                    ? ((object[])d["airlineCodes"]).Select(Convert.ToString).ToArray() : null,
+                Stops = d.ContainsKey("stops") && d["stops"] != null ? Convert.ToInt32(d["stops"]) : -1,
+                Minutes = d.ContainsKey("minutes") && d["minutes"] != null ? Convert.ToInt32(d["minutes"]) : 0
             };
             Card old;
             if (!r.All.TryGetValue(c.Key, out old) || old.Price > c.Price) r.All[c.Key] = c;
