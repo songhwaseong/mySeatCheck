@@ -4,3 +4,6 @@ app/data/
 # Temp files left by Windows when the exe is replaced
 *.TMP
 *.tmp
+
+# Packages built by package.bat
+dist/
